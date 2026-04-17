@@ -1,14 +1,7 @@
-"use client";
+import { redirect } from "next/navigation";
 
-import { useEffect } from "react";
-import { useRouter } from "next/navigation";
+export const dynamic = "force-dynamic";
 
-export default function DashboardHomePage() {
-  const router = useRouter();
-
-  useEffect(() => {
-    router.replace("/reports");
-  }, [router]);
-
-  return null;
+export default function DashboardPage() {
+  redirect("/reports");
 }
