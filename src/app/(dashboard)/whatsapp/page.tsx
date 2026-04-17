@@ -789,6 +789,38 @@ export default function WhatsAppPage() {
                     </div>
                   )}
                 </div>
+
+                {/* Tags inline next to assigned agent */}
+                {activeConv.tags.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                    {activeConv.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 4,
+                          padding: "3px 8px",
+                          background: "#df564120",
+                          color: "#df5641",
+                          borderRadius: 3,
+                          fontSize: 10,
+                          fontWeight: 500,
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        {tag}
+                        <button
+                          onClick={() => void removeTag(tag)}
+                          style={{ background: "none", border: "none", color: "#df5641", cursor: "pointer", padding: 0, fontSize: 12, lineHeight: 1 }}
+                          aria-label={`Remove tag ${tag}`}
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
 
               {/* Right: actions */}
@@ -962,38 +994,6 @@ export default function WhatsAppPage() {
                         </div>
                       )}
 
-                      {/* Current tags */}
-                      {activeConv && activeConv.tags.length > 0 && (
-                        <div style={{ padding: "8px 14px", borderTop: "1px solid #2a2a2a" }}>
-                          <p style={{ fontSize: 10, color: "#666", marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>Tags</p>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                            {activeConv.tags.map((tag) => (
-                              <span
-                                key={tag}
-                                style={{
-                                  display: "inline-flex",
-                                  alignItems: "center",
-                                  gap: 4,
-                                  padding: "2px 8px",
-                                  background: "#df564120",
-                                  color: "#df5641",
-                                  borderRadius: 3,
-                                  fontSize: 10,
-                                  fontWeight: 500,
-                                }}
-                              >
-                                {tag}
-                                <button
-                                  onClick={() => void removeTag(tag)}
-                                  style={{ background: "none", border: "none", color: "#df5641", cursor: "pointer", padding: 0, fontSize: 12, lineHeight: 1 }}
-                                >
-                                  &times;
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </div>
