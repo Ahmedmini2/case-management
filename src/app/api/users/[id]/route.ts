@@ -10,7 +10,8 @@ const updateSchema = z.object({
   image: z.string().url().or(z.string().startsWith("/")).nullable().optional(),
 });
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
@@ -23,7 +24,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   if (parsed.data.email) {
     const existing = await db.user.findFirst({
-      where: { email: parsed.data.email, id: { not: params.id } },
+      where: { email: parsed.data.email, id: { not: id } },
       select: { id: true },
     });
     if (existing) {
@@ -32,7 +33,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
 
   const updated = await db.user.update({
-    where: { id: params.id },
+    where: { id },
     data: {
       ...(typeof parsed.data.name !== "undefined" ? { name: parsed.data.name } : {}),
       ...(typeof parsed.data.email !== "undefined" ? { email: parsed.data.email } : {}),

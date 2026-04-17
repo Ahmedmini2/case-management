@@ -5,11 +5,12 @@ import { db } from "@/lib/prisma";
 
 const GRAPH_URL = "https://graph.facebook.com/v19.0";
 
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
-  const template = await db.whatsAppTemplate.findUnique({ where: { id: params.id } });
+  const template = await db.whatsAppTemplate.findUnique({ where: { id } });
   if (!template) return NextResponse.json(fail("Template not found"), { status: 404 });
 
   // Delete from Meta if it has a metaId
@@ -27,6 +28,6 @@ export async function DELETE(_: Request, { params }: { params: { id: string } })
     }
   }
 
-  await db.whatsAppTemplate.delete({ where: { id: params.id } });
-  return NextResponse.json(ok({ id: params.id }));
+  await db.whatsAppTemplate.delete({ where: { id } });
+  return NextResponse.json(ok({ id }));
 }

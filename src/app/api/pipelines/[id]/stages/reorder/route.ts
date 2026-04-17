@@ -8,7 +8,8 @@ const schema = z.object({
   stageIds: z.array(z.string()).min(1),
 });
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
@@ -16,16 +17,16 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (!parsed.success) return NextResponse.json(fail("Invalid request body"), { status: 400 });
 
   const stages = await db.pipelineStage.findMany({
-    where: { pipelineId: params.id },
+    where: { pipelineId: id },
     select: { id: true },
   });
   const existingIds = new Set(stages.map((s) => s.id));
-  if (parsed.data.stageIds.some((id) => !existingIds.has(id))) {
+  if (parsed.data.stageIds.some((sid) => !existingIds.has(sid))) {
     return NextResponse.json(fail("Stage list does not match pipeline stages"), { status: 400 });
   }
 
   const providedIds = parsed.data.stageIds;
-  const missingIds = stages.map((s) => s.id).filter((id) => !providedIds.includes(id));
+  const missingIds = stages.map((s) => s.id).filter((sid) => !providedIds.includes(sid));
   const finalOrder = [...providedIds, ...missingIds];
 
   // Two-phase reorder avoids unique constraint collisions on [pipelineId, position].
@@ -44,5 +45,5 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     ),
   ]);
 
-  return NextResponse.json(ok({ pipelineId: params.id, reordered: true }));
+  return NextResponse.json(ok({ pipelineId: id, reordered: true }));
 }

@@ -4,12 +4,13 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
 // Get broadcast details with recipients
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
   const broadcast = await db.broadcast.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: {
       recipients: {
         orderBy: { createdAt: "asc" },
@@ -32,14 +33,15 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
 }
 
 // Delete a broadcast (only if DRAFT or COMPLETED)
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
-  const broadcast = await db.broadcast.findUnique({ where: { id: params.id }, select: { status: true } });
+  const broadcast = await db.broadcast.findUnique({ where: { id }, select: { status: true } });
   if (!broadcast) return NextResponse.json(fail("Broadcast not found"), { status: 404 });
   if (broadcast.status === "SENDING") return NextResponse.json(fail("Cannot delete a broadcast that is currently sending"), { status: 400 });
 
-  await db.broadcast.delete({ where: { id: params.id } });
-  return NextResponse.json(ok({ id: params.id }));
+  await db.broadcast.delete({ where: { id } });
+  return NextResponse.json(ok({ id }));
 }

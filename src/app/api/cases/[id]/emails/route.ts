@@ -12,14 +12,15 @@ const sendEmailSchema = z.object({
   body: z.string().min(1),
 });
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const emails = await db.email.findMany({
-    where: { caseId: params.id },
+    where: { caseId: id },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
@@ -37,7 +38,8 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(emails, { total: emails.length }));
 }
 
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
@@ -50,7 +52,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   }
 
   const caseItem = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       id: true,
       caseNumber: true,
@@ -67,7 +69,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const email = await db.$transaction(async (tx) => {
     const created = await tx.email.create({
       data: {
-        caseId: params.id,
+        caseId: id,
         subject: parsed.data.subject,
         body: parsed.data.body,
         bodyText: parsed.data.body,
@@ -83,7 +85,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     await tx.activity.create({
       data: {
-        caseId: params.id,
+        caseId: id,
         userId: session.user.id,
         type: ActivityType.EMAIL_SENT,
         description: `Email queued: ${parsed.data.subject}`,
@@ -103,7 +105,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
     priority: caseItem.priority,
     assignee: caseItem.assignedTo?.name,
     updateMessage: parsed.data.body,
-    caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${params.id}`,
+    caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${id}`,
   });
 
   return NextResponse.json(ok(email), { status: 201 });

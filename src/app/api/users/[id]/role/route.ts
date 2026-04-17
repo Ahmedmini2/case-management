@@ -9,7 +9,8 @@ const schema = z.object({
   role: z.nativeEnum(UserRole),
 });
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
@@ -21,7 +22,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
 
   const updated = await db.user.update({
-    where: { id: params.id },
+    where: { id },
     data: { role: parsed.data.role },
     select: { id: true, name: true, email: true, role: true },
   });

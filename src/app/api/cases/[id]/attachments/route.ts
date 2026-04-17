@@ -19,12 +19,13 @@ const ALLOWED_TYPES = [
 ];
 const MAX_SIZE = 25 * 1024 * 1024; // 25 MB
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
   const attachments = await db.attachment.findMany({
-    where: { caseId: params.id },
+    where: { caseId: id },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
@@ -39,12 +40,13 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(attachments, { total: attachments.length }));
 }
 
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
   const caseRecord = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true },
   });
   if (!caseRecord) return NextResponse.json(fail("Case not found"), { status: 404 });
@@ -70,7 +72,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   const attachment = await db.attachment.create({
     data: {
-      caseId: params.id,
+      caseId: id,
       uploadedById: session.user.id,
       fileName: file.name,
       fileSize: file.size,
@@ -83,7 +85,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   await db.activity.create({
     data: {
-      caseId: params.id,
+      caseId: id,
       userId: session.user.id,
       type: ActivityType.ATTACHMENT_ADDED,
       description: `Attached file: ${file.name}`,
@@ -94,7 +96,8 @@ export async function POST(request: Request, { params }: { params: { id: string 
   return NextResponse.json(ok(attachment), { status: 201 });
 }
 
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
@@ -103,7 +106,7 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
   if (!attachmentId) return NextResponse.json(fail("attachmentId required"), { status: 400 });
 
   const attachment = await db.attachment.findFirst({
-    where: { id: attachmentId, caseId: params.id },
+    where: { id: attachmentId, caseId: id },
     select: { id: true },
   });
   if (!attachment) return NextResponse.json(fail("Attachment not found"), { status: 404 });

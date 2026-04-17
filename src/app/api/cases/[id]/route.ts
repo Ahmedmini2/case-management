@@ -20,14 +20,15 @@ const updateCaseSchema = z.object({
   pipelineStageId: z.string().nullable().optional(),
 });
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const item = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       id: true,
       caseNumber: true,
@@ -73,13 +74,14 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(item));
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
-  const existing = await db.case.findUnique({ where: { id: params.id } });
+  const existing = await db.case.findUnique({ where: { id } });
   if (!existing) {
     return NextResponse.json(fail("Case not found"), { status: 404 });
   }
@@ -99,7 +101,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
           })
         : null;
     const nextCase = await tx.case.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         ...parsed.data,
         dueDate: parsed.data.dueDate ? new Date(parsed.data.dueDate) : parsed.data.dueDate,
@@ -118,7 +120,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     if (parsed.data.status && parsed.data.status !== existing.status) {
       await tx.activity.create({
         data: {
-          caseId: params.id,
+          caseId: id,
           userId: session.user.id,
           type: ActivityType.STATUS_CHANGED,
           description: "Status updated",
@@ -131,7 +133,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     if (parsed.data.priority && parsed.data.priority !== existing.priority) {
       await tx.activity.create({
         data: {
-          caseId: params.id,
+          caseId: id,
           userId: session.user.id,
           type: ActivityType.PRIORITY_CHANGED,
           description: "Priority updated",
@@ -147,7 +149,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     ) {
       await tx.activity.create({
         data: {
-          caseId: params.id,
+          caseId: id,
           userId: session.user.id,
           type: ActivityType.STAGE_CHANGED,
           description: "Pipeline stage updated",
@@ -171,7 +173,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
         });
         if (oldTag) {
           await tx.caseTag.deleteMany({
-            where: { caseId: params.id, tagId: oldTag.id },
+            where: { caseId: id, tagId: oldTag.id },
           });
         }
       }
@@ -187,16 +189,16 @@ export async function PATCH(request: Request, { params }: { params: { id: string
           select: { id: true },
         });
         await tx.caseTag.upsert({
-          where: { caseId_tagId: { caseId: params.id, tagId: tag.id } },
+          where: { caseId_tagId: { caseId: id, tagId: tag.id } },
           update: {},
-          create: { caseId: params.id, tagId: tag.id },
+          create: { caseId: id, tagId: tag.id },
         });
       }
 
       if (nextStage?.name) {
         await tx.activity.create({
           data: {
-            caseId: params.id,
+            caseId: id,
             userId: session.user.id,
             type: ActivityType.TAG_ADDED,
             description: `Stage tag updated to ${nextStage.name}`,
@@ -211,10 +213,10 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
   await writeAudit({
     userId: session.user.id,
-    caseId: params.id,
+    caseId: id,
     action: "CASE_UPDATED",
     resource: "case",
-    resourceId: params.id,
+    resourceId: id,
     before: existing,
     after: updated,
     req: request,
@@ -231,7 +233,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (recipient && (parsed.data.status || parsed.data.priority)) {
     const emailRecord = await db.email.create({
       data: {
-        caseId: params.id,
+        caseId: id,
         subject: `Case updated: ${updated.caseNumber}`,
         body: "A case was updated.",
         bodyText: "A case was updated.",
@@ -255,14 +257,14 @@ export async function PATCH(request: Request, { params }: { params: { id: string
       priority: updated.priority,
       assignee: null,
       updateMessage: "Status or priority changed.",
-      caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${params.id}`,
+      caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${id}`,
     });
   }
 
   if (parsed.data.status) {
     await runAutomationEngine({
       triggerType: "CASE_STATUS_CHANGED",
-      caseId: params.id,
+      caseId: id,
       actorUserId: session.user.id,
       payload: { oldStatus: existing.status, newStatus: parsed.data.status },
     });
@@ -271,7 +273,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (parsed.data.priority) {
     await runAutomationEngine({
       triggerType: "CASE_PRIORITY_CHANGED",
-      caseId: params.id,
+      caseId: id,
       actorUserId: session.user.id,
       payload: { oldPriority: existing.priority, newPriority: parsed.data.priority },
     });
@@ -283,7 +285,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   ) {
     await runAutomationEngine({
       triggerType: "STAGE_CHANGED",
-      caseId: params.id,
+      caseId: id,
       actorUserId: session.user.id,
       payload: { oldStageId: existing.pipelineStageId, newStageId: parsed.data.pipelineStageId },
     });
@@ -292,31 +294,32 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   return NextResponse.json(ok(updated));
 }
 
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const existing = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true, caseNumber: true, title: true },
   });
   if (!existing) {
     return NextResponse.json(fail("Case not found"), { status: 404 });
   }
 
-  await db.case.delete({ where: { id: params.id } });
+  await db.case.delete({ where: { id } });
 
   await writeAudit({
     userId: session.user.id,
-    caseId: params.id,
+    caseId: id,
     action: "CASE_DELETED",
     resource: "case",
-    resourceId: params.id,
+    resourceId: id,
     before: existing,
     req: request,
   });
 
-  return NextResponse.json(ok({ id: params.id }));
+  return NextResponse.json(ok({ id }));
 }

@@ -3,14 +3,15 @@ import { ok, fail } from "@/lib/api";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const conversation = await db.whatsAppConversation.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true },
   });
 
@@ -20,32 +21,33 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
 
   // Mark unread inbound messages as read
   await db.whatsAppMessage.updateMany({
-    where: { conversationId: params.id, direction: "inbound", isRead: false },
+    where: { conversationId: id, direction: "inbound", isRead: false },
     data: { isRead: true },
   });
 
   // Reset unread count on conversation
   await db.whatsAppConversation.update({
-    where: { id: params.id },
+    where: { id },
     data: { unreadCount: 0 },
   });
 
   const messages = await db.whatsAppMessage.findMany({
-    where: { conversationId: params.id },
+    where: { conversationId: id },
     orderBy: { timestamp: "asc" },
   });
 
   return NextResponse.json(ok(messages));
 }
 
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const conversation = await db.whatsAppConversation.findUnique({
-    where: { id: params.id },
+    where: { id },
   });
 
   if (!conversation) {
@@ -99,7 +101,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   const message = await db.whatsAppMessage.create({
     data: {
-      conversationId: params.id,
+      conversationId: id,
       direction: "outbound",
       sender: "agent",
       senderName: user?.name ?? user?.email ?? "Agent",
@@ -112,7 +114,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   // Update conversation last message
   await db.whatsAppConversation.update({
-    where: { id: params.id },
+    where: { id },
     data: {
       lastMessage: messageBody.length > 200 ? messageBody.slice(0, 200) + "..." : messageBody,
       lastMessageAt: new Date(),

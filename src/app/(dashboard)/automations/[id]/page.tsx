@@ -1,12 +1,13 @@
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
-export default async function AutomationDetailPage({ params }: { params: { id: string } }) {
+export default async function AutomationDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return null;
 
   const item = await db.automation.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: { runs: { orderBy: { createdAt: "desc" }, take: 20 } },
   });
   if (!item) return <p className="text-sm text-muted-foreground">Automation not found.</p>;

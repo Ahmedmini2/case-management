@@ -47,11 +47,12 @@ async function getContact(id: string) {
   });
 }
 
-export default async function ContactDetailPage({ params }: { params: { id: string } }) {
+export default async function ContactDetailPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return null;
 
-  const contact = await getContact(params.id);
+  const contact = await getContact(id);
   if (!contact) notFound();
 
   const initials = contact.name

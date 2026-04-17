@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, use } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -8,14 +8,15 @@ import { Label } from "@/components/ui/label";
 type Stage = { id: string; name: string; color: string };
 type Pipeline = { id: string; name: string; description: string | null; isDefault: boolean; stages: Stage[] };
 
-export default function PipelineDetailPage({ params }: { params: { pipelineId: string } }) {
+export default function PipelineDetailPage({ params }: { params: Promise<{ pipelineId: string }> }) {
+  const { pipelineId } = use(params);
   const [pipeline, setPipeline] = useState<Pipeline | null>(null);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     async function load() {
-      const response = await fetch(`/api/pipelines/${params.pipelineId}`);
+      const response = await fetch(`/api/pipelines/${pipelineId}`);
       const result = (await response.json()) as { data: Pipeline | null };
       if (result.data) {
         setPipeline(result.data);
@@ -23,11 +24,11 @@ export default function PipelineDetailPage({ params }: { params: { pipelineId: s
       }
     }
     void load();
-  }, [params.pipelineId]);
+  }, [pipelineId]);
 
   async function save() {
     setSaving(true);
-    await fetch(`/api/pipelines/${params.pipelineId}`, {
+    await fetch(`/api/pipelines/${pipelineId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),

@@ -2,12 +2,14 @@ import { notFound } from "next/navigation";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
-export default async function PrintCasePage({ params }: { params: { id: string } }) {
+export default async function PrintCasePage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user?.id) return null;
 
+  const { id } = await params;
+
   const item = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       caseNumber: true,
       title: true,

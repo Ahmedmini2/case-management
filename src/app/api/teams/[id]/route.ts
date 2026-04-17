@@ -10,7 +10,8 @@ const updateSchema = z.object({
   color: z.string().optional(),
 });
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
@@ -18,17 +19,18 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (!parsed.success) return NextResponse.json(fail("Invalid request body"), { status: 400 });
 
   const updated = await db.team.update({
-    where: { id: params.id },
+    where: { id },
     data: parsed.data,
     select: { id: true, name: true, description: true, color: true },
   });
   return NextResponse.json(ok(updated));
 }
 
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
-  await db.team.delete({ where: { id: params.id } });
-  return NextResponse.json(ok({ id: params.id }));
+  await db.team.delete({ where: { id } });
+  return NextResponse.json(ok({ id }));
 }

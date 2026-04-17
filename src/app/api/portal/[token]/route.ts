@@ -2,12 +2,13 @@ import { NextResponse } from "next/server";
 import { fail, ok } from "@/lib/api";
 import { db } from "@/lib/prisma";
 
-export async function GET(_: Request, { params }: { params: { token: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
   const item = await db.case.findFirst({
     where: {
       metadata: {
         path: ["portalToken"],
-        equals: params.token,
+        equals: token,
       },
     },
     select: {

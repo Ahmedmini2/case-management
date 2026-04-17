@@ -12,12 +12,13 @@ const updateSchema = z.object({
   notes: z.string().nullable().optional(),
 });
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
   const contact = await db.contact.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       id: true,
       name: true,
@@ -48,18 +49,19 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(contact));
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
   const parsed = updateSchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json(fail("Invalid request body"), { status: 400 });
 
-  const contact = await db.contact.findUnique({ where: { id: params.id }, select: { id: true } });
+  const contact = await db.contact.findUnique({ where: { id }, select: { id: true } });
   if (!contact) return NextResponse.json(fail("Contact not found"), { status: 404 });
 
   const updated = await db.contact.update({
-    where: { id: params.id },
+    where: { id },
     data: parsed.data,
     select: { id: true, name: true, email: true, phone: true, company: true, notes: true },
   });
@@ -67,13 +69,14 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   return NextResponse.json(ok(updated));
 }
 
-export async function DELETE(_: Request, { params }: { params: { id: string } }) {
+export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
-  const contact = await db.contact.findUnique({ where: { id: params.id }, select: { id: true } });
+  const contact = await db.contact.findUnique({ where: { id }, select: { id: true } });
   if (!contact) return NextResponse.json(fail("Contact not found"), { status: 404 });
 
-  await db.contact.delete({ where: { id: params.id } });
-  return NextResponse.json(ok({ id: params.id }));
+  await db.contact.delete({ where: { id } });
+  return NextResponse.json(ok({ id }));
 }

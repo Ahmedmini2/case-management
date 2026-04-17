@@ -3,14 +3,15 @@ import { fail, ok } from "@/lib/api";
 import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const pipeline = await db.pipeline.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       id: true,
       name: true,

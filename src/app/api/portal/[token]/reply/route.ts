@@ -8,13 +8,14 @@ const replySchema = z.object({
   body: z.string().min(1).max(5000),
 });
 
-export async function POST(request: Request, { params }: { params: { token: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ token: string }> }) {
+  const { token } = await params;
   const parsed = replySchema.safeParse(await request.json());
   if (!parsed.success) return NextResponse.json(fail("Invalid request body"), { status: 400 });
 
   const caseItem = await db.case.findFirst({
     where: {
-      metadata: { path: ["portalToken"], equals: params.token },
+      metadata: { path: ["portalToken"], equals: token },
     },
     select: { id: true, createdById: true },
   });

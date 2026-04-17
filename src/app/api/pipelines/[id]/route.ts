@@ -21,14 +21,15 @@ const updatePipelineSchema = z.object({
     .optional(),
 });
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const pipeline = await db.pipeline.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: {
       id: true,
       name: true,
@@ -48,14 +49,15 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(pipeline));
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const existing = await db.pipeline.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true, name: true, isDefault: true },
   });
   if (!existing) {
@@ -74,10 +76,10 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     }
 
     if (parsed.data.stages) {
-      await tx.pipelineStage.deleteMany({ where: { pipelineId: params.id } });
+      await tx.pipelineStage.deleteMany({ where: { pipelineId: id } });
       await tx.pipelineStage.createMany({
         data: parsed.data.stages.map((stage, idx) => ({
-          pipelineId: params.id,
+          pipelineId: id,
           name: stage.name,
           color: stage.color,
           isTerminal: Boolean(stage.isTerminal),
@@ -87,7 +89,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     }
 
     return tx.pipeline.update({
-      where: { id: params.id },
+      where: { id },
       data: {
         ...(parsed.data.name ? { name: parsed.data.name } : {}),
         ...(typeof parsed.data.description !== "undefined"
@@ -105,7 +107,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     userId: session.user.id,
     action: "PIPELINE_UPDATED",
     resource: "pipeline",
-    resourceId: params.id,
+    resourceId: id,
     before: existing,
     after: updated,
     req: request,
@@ -114,30 +116,31 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   return NextResponse.json(ok(updated));
 }
 
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const existing = await db.pipeline.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true, isDefault: true },
   });
   if (!existing) {
     return NextResponse.json(fail("Pipeline not found"), { status: 404 });
   }
 
-  await db.pipeline.delete({ where: { id: params.id } });
+  await db.pipeline.delete({ where: { id } });
 
   await writeAudit({
     userId: session.user.id,
     action: "PIPELINE_DELETED",
     resource: "pipeline",
-    resourceId: params.id,
+    resourceId: id,
     before: existing,
     req: request,
   });
 
-  return NextResponse.json(ok({ id: params.id }));
+  return NextResponse.json(ok({ id }));
 }

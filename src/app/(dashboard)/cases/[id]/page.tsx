@@ -52,12 +52,14 @@ async function getUsers() {
   });
 }
 
-export default async function CaseDetailPage({ params }: { params: { id: string } }) {
+export default async function CaseDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user?.id) return null;
 
+  const { id } = await params;
+
   const [caseData, users] = await Promise.all([
-    getCaseData(params.id),
+    getCaseData(id),
     getUsers(),
   ]);
 
@@ -94,13 +96,13 @@ export default async function CaseDetailPage({ params }: { params: { id: string 
           <ArrowLeft className="h-4 w-4" />
           All Cases
         </Link>
-        <Link href={`/cases/${params.id}/print`} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+        <Link href={`/cases/${id}/print`} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
           <Printer className="h-4 w-4" />
           Print / PDF
         </Link>
       </div>
       <CaseDetail
-        caseId={params.id}
+        caseId={id}
         currentUserId={session.user.id}
         initialData={initialData}
         initialUsers={initialUsers}

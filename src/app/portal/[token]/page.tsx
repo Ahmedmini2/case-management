@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, use } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,13 +20,14 @@ type PortalCase = {
   activities: Array<{ id: string; description: string; createdAt: string }>;
 };
 
-export default function PortalTrackPage({ params }: { params: { token: string } }) {
+export default function PortalTrackPage({ params }: { params: Promise<{ token: string }> }) {
+  const { token } = use(params);
   const [item, setItem] = useState<PortalCase | null>(null);
   const [reply, setReply] = useState("");
   const [message, setMessage] = useState("");
 
   async function load() {
-    const response = await fetch(`/api/portal/${params.token}`, { cache: "no-store" });
+    const response = await fetch(`/api/portal/${token}`, { cache: "no-store" });
     const json = (await response.json()) as { data: PortalCase | null; error: string | null };
     if (!response.ok) {
       setMessage(json.error ?? "Unable to load case.");
@@ -37,11 +38,11 @@ export default function PortalTrackPage({ params }: { params: { token: string } 
 
   useEffect(() => {
     void load();
-  }, [params.token]);
+  }, [token]);
 
   async function sendReply() {
     if (!reply.trim()) return;
-    const response = await fetch(`/api/portal/${params.token}/reply`, {
+    const response = await fetch(`/api/portal/${token}/reply`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ body: reply }),

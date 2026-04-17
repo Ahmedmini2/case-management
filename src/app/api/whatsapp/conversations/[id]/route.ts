@@ -5,14 +5,15 @@ import { writeAudit } from "@/lib/audit";
 import { db } from "@/lib/prisma";
 import { triggerPusherEvent } from "@/lib/pusher";
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const conversation = await db.whatsAppConversation.findUnique({
-    where: { id: params.id },
+    where: { id },
   });
 
   if (!conversation) {
@@ -22,14 +23,15 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(conversation));
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const conversation = await db.whatsAppConversation.findUnique({
-    where: { id: params.id },
+    where: { id },
   });
 
   if (!conversation) {
@@ -88,7 +90,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
 
   const updated = await db.whatsAppConversation.update({
-    where: { id: params.id },
+    where: { id },
     data,
   });
 
@@ -96,14 +98,14 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     userId: session.user.id,
     action: "UPDATE",
     resource: "WhatsAppConversation",
-    resourceId: params.id,
+    resourceId: id,
     before: conversation,
     after: updated,
     req: request,
   });
 
   await triggerPusherEvent("whatsapp", "whatsapp:conversation_updated", {
-    conversationId: params.id,
+    conversationId: id,
     ...updated,
   });
 

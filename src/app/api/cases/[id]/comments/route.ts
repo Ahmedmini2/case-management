@@ -13,14 +13,15 @@ const createCommentSchema = z.object({
   isInternal: z.boolean().default(false),
 });
 
-export async function GET(_: Request, { params }: { params: { id: string } }) {
+export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const comments = await db.comment.findMany({
-    where: { caseId: params.id },
+    where: { caseId: id },
     orderBy: { createdAt: "desc" },
     select: {
       id: true,
@@ -35,14 +36,15 @@ export async function GET(_: Request, { params }: { params: { id: string } }) {
   return NextResponse.json(ok(comments, { total: comments.length }));
 }
 
-export async function POST(request: Request, { params }: { params: { id: string } }) {
+export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
 
   const caseExists = await db.case.findUnique({
-    where: { id: params.id },
+    where: { id },
     select: { id: true },
   });
   if (!caseExists) {
@@ -58,7 +60,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const comment = await db.$transaction(async (tx) => {
     const created = await tx.comment.create({
       data: {
-        caseId: params.id,
+        caseId: id,
         authorId: session.user.id,
         body: parsed.data.body,
         isInternal: parsed.data.isInternal,
@@ -73,7 +75,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
     await tx.activity.create({
       data: {
-        caseId: params.id,
+        caseId: id,
         userId: session.user.id,
         type: ActivityType.COMMENT_ADDED,
         description: parsed.data.isInternal ? "Internal note added" : "Comment added",
@@ -85,7 +87,7 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   await writeAudit({
     userId: session.user.id,
-    caseId: params.id,
+    caseId: id,
     action: "COMMENT_ADDED",
     resource: "comment",
     resourceId: comment.id,
@@ -95,14 +97,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
 
   if (!parsed.data.isInternal && session.user.email) {
     const caseInfo = await db.case.findUnique({
-      where: { id: params.id },
+      where: { id },
       select: { caseNumber: true, title: true, status: true, priority: true },
     });
 
     if (caseInfo) {
       const emailRecord = await db.email.create({
         data: {
-          caseId: params.id,
+          caseId: id,
           subject: `New comment on ${caseInfo.caseNumber}`,
           body: parsed.data.body,
           bodyText: parsed.data.body,
@@ -126,14 +128,14 @@ export async function POST(request: Request, { params }: { params: { id: string 
         priority: caseInfo.priority,
         assignee: null,
         updateMessage: parsed.data.body,
-        caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${params.id}`,
+        caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${id}`,
       });
     }
   }
 
   await runAutomationEngine({
     triggerType: "COMMENT_ADDED",
-    caseId: params.id,
+    caseId: id,
     actorUserId: session.user.id,
     payload: { isInternal: parsed.data.isInternal },
   });
