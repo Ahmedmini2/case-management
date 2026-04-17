@@ -29,12 +29,12 @@ function LoginForm() {
       callbackUrl,
     });
 
-    setLoading(false);
     if (result?.error) {
+      setLoading(false);
       setError("Invalid email or password. Please try again.");
       return;
     }
-    router.push(result?.url ?? callbackUrl);
+    window.location.assign(result?.url ?? callbackUrl);
   }
 
   return (

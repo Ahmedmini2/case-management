@@ -4,12 +4,14 @@ import { auth } from "@/lib/auth";
 import { db } from "@/lib/prisma";
 
 // Send a broadcast — processes all pending recipients using the WhatsApp template
-export async function POST(_: Request, { params }: { params: { id: string } }) {
+export async function POST(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await auth();
   if (!session?.user?.id) return NextResponse.json(fail("Unauthorized"), { status: 401 });
 
+  const { id } = await params;
+
   const broadcast = await db.broadcast.findUnique({
-    where: { id: params.id },
+    where: { id },
     include: {
       template: true,
       recipients: { where: { status: "PENDING" } },
@@ -40,11 +42,11 @@ export async function POST(_: Request, { params }: { params: { id: string } }) {
 
   // Mark as sending
   await db.broadcast.update({
-    where: { id: params.id },
+    where: { id },
     data: { status: "SENDING", startedAt: new Date() },
   });
 
-  const broadcastId = params.id;
+  const broadcastId = id;
   const templateName = broadcast.template.name;
   const templateLang = broadcast.template.language;
   const templateVars = (broadcast.templateVars ?? {}) as Record<string, string>;
