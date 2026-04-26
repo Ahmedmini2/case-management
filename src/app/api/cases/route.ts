@@ -26,18 +26,38 @@ async function resolveCaller(request: Request): Promise<
   const token = authHeader.slice("Bearer ".length).trim();
   const key = await verifyApiKey(token);
   if (!key) return null;
-  // For API-key-authored cases, record them under the first SUPER_ADMIN as the system author.
+
+  // Cases need a `createdById` (NOT NULL FK to users). For API-key-authored cases pick a system
+  // owner: prefer SUPER_ADMIN → ADMIN → MANAGER → any active user.
   const sb = supabaseAdmin();
-  const { data: owner } = await sb
+  for (const role of ["SUPER_ADMIN", "ADMIN", "MANAGER"]) {
+    const { data } = await sb
+      .from("users")
+      .select("id, email")
+      .eq("role", role)
+      .eq("isActive", true)
+      .order("createdAt", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (data) {
+      const o = data as { id: string; email: string };
+      return { userId: o.id, email: o.email };
+    }
+  }
+  // Fallback: any active user
+  const { data: anyUser } = await sb
     .from("users")
     .select("id, email")
-    .or("role.eq.SUPER_ADMIN,role.eq.ADMIN")
+    .eq("isActive", true)
     .order("createdAt", { ascending: true })
     .limit(1)
     .maybeSingle();
-  const o = owner as { id: string; email: string } | null;
-  if (!o) return null;
-  return { userId: o.id, email: o.email };
+  if (!anyUser) {
+    console.error("[resolveCaller] no users in DB to attribute API-key case to");
+    return null;
+  }
+  const u = anyUser as { id: string; email: string };
+  return { userId: u.id, email: u.email };
 }
 
 const createCaseSchema = z.object({
