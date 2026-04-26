@@ -8,6 +8,7 @@ import { writeAudit } from "@/lib/audit";
 import { enqueueEmailJob } from "@/lib/queue/jobs";
 import { triggerPusherEvent } from "@/lib/pusher";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getCaseNotifyRecipients } from "@/lib/notify";
 
 const updateCaseSchema = z.object({
   title: z.string().min(3).max(200).optional(),
@@ -31,7 +32,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const { data: caseRow, error: caseErr } = await sb
     .from("cases")
     .select(
-      "id, caseNumber, title, description, status, priority, source, createdAt, updatedAt, dueDate, assignedToId, createdById",
+      "id, caseNumber, title, description, status, priority, source, createdAt, updatedAt, dueDate, assignedToId, createdById, contactId",
     )
     .eq("id", id)
     .maybeSingle();
@@ -52,7 +53,25 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     dueDate: string | null;
     assignedToId: string | null;
     createdById: string | null;
+    contactId: string | null;
   };
+
+  // Fetch contact in parallel with users
+  let contact: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    company: string | null;
+  } | null = null;
+  if (c.contactId) {
+    const { data: ct } = await sb
+      .from("contacts")
+      .select("id, name, email, phone, company")
+      .eq("id", c.contactId)
+      .maybeSingle();
+    contact = (ct as typeof contact) ?? null;
+  }
 
   // Fetch related users
   const userIds = [c.assignedToId, c.createdById].filter(Boolean) as string[];
@@ -140,6 +159,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
           return u ? { id: u.id, name: u.name, email: u.email } : null;
         })()
       : null,
+    contact,
     comments: comments.map((cm) => ({
       id: cm.id,
       body: cm.body,
@@ -375,18 +395,37 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       console.error("[case:update] pusher failed", err);
     }
 
-    if (recipientEmail && (parsed.data.status || parsed.data.priority)) {
+    // Notify on every update (status, priority, assignee, due date, etc.)
+    const recipients = getCaseNotifyRecipients(recipientEmail);
+    if (recipients.length > 0) {
       try {
+        const changedFields: string[] = [];
+        if (parsed.data.status && parsed.data.status !== ex.status) {
+          changedFields.push(`status: ${ex.status} → ${parsed.data.status}`);
+        }
+        if (parsed.data.priority && parsed.data.priority !== ex.priority) {
+          changedFields.push(`priority: ${ex.priority} → ${parsed.data.priority}`);
+        }
+        if (typeof parsed.data.assignedToId !== "undefined") {
+          changedFields.push("assignee changed");
+        }
+        if (typeof parsed.data.title !== "undefined") changedFields.push("title");
+        if (typeof parsed.data.description !== "undefined") changedFields.push("description");
+        if (typeof parsed.data.pipelineStageId !== "undefined") changedFields.push("stage");
+        if (typeof parsed.data.dueDate !== "undefined") changedFields.push("due date");
+        const updateMessage =
+          changedFields.length > 0 ? `Changes: ${changedFields.join(", ")}.` : "Case updated.";
+
         const { data: emailRecord } = await sbAfter
           .from("emails")
           .insert({
             caseId: id,
             subject: `Case updated: ${updated.caseNumber}`,
-            body: "A case was updated.",
-            bodyText: "A case was updated.",
+            body: updateMessage,
+            bodyText: updateMessage,
             direction: "OUTBOUND",
             from: process.env.EMAIL_FROM ?? "support@example.com",
-            to: [recipientEmail],
+            to: recipients,
             cc: [],
             bcc: [],
             status: "PENDING",
@@ -397,14 +436,14 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
         if (emailRecord) {
           await enqueueEmailJob({
             emailId: (emailRecord as { id: string }).id,
-            to: [recipientEmail],
+            to: recipients,
             subject: `Case updated: ${updated.caseNumber}`,
             caseNumber: updated.caseNumber,
             caseTitle: updated.title,
             status: updated.status,
             priority: updated.priority,
             assignee: null,
-            updateMessage: "Status or priority changed.",
+            updateMessage,
             caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${id}`,
           });
         }

@@ -11,6 +11,7 @@ import { enqueueEmailJob } from "@/lib/queue/jobs";
 import { triggerPusherEvent } from "@/lib/pusher";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { calculateSlaDueDate, enqueueSlaWarning } from "@/lib/sla";
+import { getCaseNotifyRecipients } from "@/lib/notify";
 
 // Resolve identity from either a NextAuth session (browser) or an API key Bearer token (n8n/Zapier).
 // Returns the userId to record on the case, plus an optional email for outbound notification.
@@ -424,7 +425,8 @@ export async function POST(request: Request) {
         actorUserId: caller.userId,
       }).catch((e) => console.error("[POST /api/cases] Automation error:", e)),
       (async () => {
-        if (!caller.email) return;
+        const recipients = getCaseNotifyRecipients(caller.email);
+        if (recipients.length === 0) return;
         const { data: emailRecord, error: emErr } = await sb
           .from("emails")
           .insert({
@@ -434,7 +436,7 @@ export async function POST(request: Request) {
             bodyText: "A new case has been created.",
             direction: "OUTBOUND",
             from: process.env.EMAIL_FROM ?? "support@example.com",
-            to: [caller.email],
+            to: recipients,
             cc: [],
             bcc: [],
             status: "PENDING",
@@ -447,14 +449,14 @@ export async function POST(request: Request) {
         }
         await enqueueEmailJob({
           emailId: (emailRecord as { id: string }).id,
-          to: [caller.email],
+          to: recipients,
           subject: `Case created: ${newCase.caseNumber}`,
           caseNumber: newCase.caseNumber,
           caseTitle: newCase.title,
           status: newCase.status,
           priority: newCase.priority,
           assignee: null,
-          updateMessage: "Your case has been created successfully.",
+          updateMessage: "A new case has been created.",
           caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${newCase.id}`,
         });
       })().catch((e) => console.error("[POST /api/cases] Email error:", e)),

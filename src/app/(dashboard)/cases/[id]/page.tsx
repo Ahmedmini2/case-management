@@ -11,7 +11,7 @@ async function getCaseData(id: string) {
   const { data: caseRow } = await sb
     .from("cases")
     .select(
-      "id, caseNumber, title, description, status, priority, dueDate, slaBreachedAt, resolvedAt, closedAt, assignedToId",
+      "id, caseNumber, title, description, status, priority, dueDate, slaBreachedAt, resolvedAt, closedAt, assignedToId, contactId",
     )
     .eq("id", id)
     .maybeSingle();
@@ -30,6 +30,7 @@ async function getCaseData(id: string) {
     resolvedAt: string | null;
     closedAt: string | null;
     assignedToId: string | null;
+    contactId: string | null;
   };
 
   let assignedTo: { id: string; name: string | null; email: string; image: string | null } | null = null;
@@ -40,6 +41,22 @@ async function getCaseData(id: string) {
       .eq("id", c.assignedToId)
       .maybeSingle();
     assignedTo = (u as typeof assignedTo) ?? null;
+  }
+
+  let contact: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    company: string | null;
+  } | null = null;
+  if (c.contactId) {
+    const { data: ct } = await sb
+      .from("contacts")
+      .select("id, name, email, phone, company")
+      .eq("id", c.contactId)
+      .maybeSingle();
+    contact = (ct as typeof contact) ?? null;
   }
 
   const { data: commentsRaw } = await sb
@@ -99,6 +116,7 @@ async function getCaseData(id: string) {
     resolvedAt: c.resolvedAt,
     closedAt: c.closedAt,
     assignedTo,
+    contact,
     comments: comments.map((cm) => ({
       id: cm.id,
       body: cm.body,

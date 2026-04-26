@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { CaseStatus, Priority } from "@/types/enums";
 import { useEffect, useState, useCallback } from "react";
 import { CasePriorityBadge } from "@/components/cases/CasePriorityBadge";
@@ -17,7 +18,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
-import { Hash, UserCircle2, FileText, Paperclip, Loader2 } from "lucide-react";
+import { Hash, UserCircle2, FileText, Paperclip, Loader2, Mail, Phone, Building2, User } from "lucide-react";
 
 type CaseDetailData = {
   id: string;
@@ -44,6 +45,13 @@ type CaseDetailData = {
     user: { name: string | null } | null;
   }>;
   assignedTo: { id: string; name: string | null; email: string | null; image?: string | null } | null;
+  contact?: {
+    id: string;
+    name: string;
+    email: string | null;
+    phone: string | null;
+    company: string | null;
+  } | null;
 };
 
 function CaseDetailSkeleton() {
@@ -276,6 +284,57 @@ export function CaseDetail({
               ))}
             </select>
           </div>
+
+          {/* Contact / customer details */}
+          {item.contact && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1.5">
+                <UserCircle2 className="h-3.5 w-3.5" />
+                Customer
+              </p>
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                <div className="flex items-center gap-2">
+                  <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <span className="text-sm font-medium">{item.contact.name}</span>
+                  {item.contact.company && (
+                    <>
+                      <span className="text-muted-foreground/40">·</span>
+                      <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <Building2 className="h-3 w-3" />
+                        {item.contact.company}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {item.contact.email && (
+                  <a
+                    href={`mailto:${item.contact.email}`}
+                    className="flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <Mail className="h-3.5 w-3.5 shrink-0" />
+                    {item.contact.email}
+                  </a>
+                )}
+                {item.contact.phone && (
+                  <a
+                    href={`tel:${item.contact.phone}`}
+                    className="flex items-center gap-2 text-sm text-primary hover:underline"
+                  >
+                    <Phone className="h-3.5 w-3.5 shrink-0" />
+                    {item.contact.phone}
+                  </a>
+                )}
+                <div className="pt-1 border-t border-border/40">
+                  <Link
+                    href={`/contacts/${item.contact.id}`}
+                    className="text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    View contact profile →
+                  </Link>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Description */}
           {item.description ? (
