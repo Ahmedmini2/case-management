@@ -26,6 +26,9 @@ export function middleware(request: NextRequest) {
     if (authHeader?.startsWith("Bearer ")) {
       return NextResponse.next();
     }
+    console.log(
+      `[middleware] ${request.method} ${pathname} no Bearer header; auth-header=${authHeader ? "present-other" : "missing"}`,
+    );
   }
 
   // Check for session cookie — NextAuth v4 and v5 names, both HTTP and HTTPS variants

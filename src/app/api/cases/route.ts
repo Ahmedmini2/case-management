@@ -52,7 +52,84 @@ const createCaseSchema = z.object({
   pipelineId: z.string().optional(),
   pipelineStageId: z.string().optional(),
   source: z.nativeEnum(CaseSource).default(CaseSource.MANUAL),
+  // Contact details — pass these to create or update the case's contact in one shot.
+  // If contactId is also provided, that takes precedence and these are ignored.
+  contactName: z.string().min(1).max(120).optional(),
+  contactEmail: z.string().email().optional(),
+  contactPhone: z.string().max(40).optional(),
+  contactCompany: z.string().max(120).optional(),
 });
+
+// Resolve or create a contact from inline name/email/phone/company. Returns the contactId.
+async function upsertContact(input: {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+}): Promise<string | null> {
+  const { name, email, phone, company } = input;
+  if (!name && !email && !phone) return null;
+
+  const sb = supabaseAdmin();
+
+  // Prefer email match (it's unique); fall back to phone match.
+  if (email) {
+    const { data: existing } = await sb
+      .from("contacts")
+      .select("id, name, phone, company")
+      .eq("email", email)
+      .maybeSingle();
+    if (existing) {
+      const ex = existing as { id: string; name: string | null; phone: string | null; company: string | null };
+      const patch: Record<string, unknown> = {};
+      if (name && name !== ex.name) patch.name = name;
+      if (phone && phone !== ex.phone) patch.phone = phone;
+      if (company && company !== ex.company) patch.company = company;
+      if (Object.keys(patch).length > 0) {
+        await sb.from("contacts").update(patch).eq("id", ex.id);
+      }
+      return ex.id;
+    }
+  }
+
+  if (phone) {
+    const { data: existingByPhone } = await sb
+      .from("contacts")
+      .select("id, name, email, company")
+      .eq("phone", phone)
+      .limit(1)
+      .maybeSingle();
+    if (existingByPhone) {
+      const ex = existingByPhone as { id: string; name: string | null; email: string | null; company: string | null };
+      const patch: Record<string, unknown> = {};
+      if (name && name !== ex.name) patch.name = name;
+      if (email && email !== ex.email) patch.email = email;
+      if (company && company !== ex.company) patch.company = company;
+      if (Object.keys(patch).length > 0) {
+        await sb.from("contacts").update(patch).eq("id", ex.id);
+      }
+      return ex.id;
+    }
+  }
+
+  // Create new contact. Name is required by the schema, so derive one from whatever we have.
+  const derivedName = name ?? email ?? phone ?? "Unknown";
+  const { data: created, error } = await sb
+    .from("contacts")
+    .insert({
+      name: derivedName,
+      email: email ?? null,
+      phone: phone ?? null,
+      company: company ?? null,
+    })
+    .select("id")
+    .single();
+  if (error || !created) {
+    console.error("[upsertContact] failed:", error?.message);
+    return null;
+  }
+  return (created as { id: string }).id;
+}
 
 export async function GET(request: Request) {
   const session = await auth();
@@ -230,6 +307,17 @@ export async function POST(request: Request) {
       }
     }
 
+    // Resolve or create the contact from inline details if no explicit contactId.
+    let contactId: string | null = parsed.data.contactId ?? null;
+    if (!contactId && (parsed.data.contactName || parsed.data.contactEmail || parsed.data.contactPhone)) {
+      contactId = await upsertContact({
+        name: parsed.data.contactName,
+        email: parsed.data.contactEmail,
+        phone: parsed.data.contactPhone,
+        company: parsed.data.contactCompany,
+      });
+    }
+
     const caseNumber = await generateCaseNumber();
     const dueDate = await calculateSlaDueDate(parsed.data.priority);
 
@@ -244,7 +332,7 @@ export async function POST(request: Request) {
         type: parsed.data.type,
         assignedToId: parsed.data.assignedToId ?? null,
         teamId: parsed.data.teamId ?? null,
-        contactId: parsed.data.contactId ?? null,
+        contactId,
         source: parsed.data.source,
         createdById: caller.userId,
         pipelineId,
@@ -337,7 +425,18 @@ export async function POST(request: Request) {
       })().catch((e) => console.error("[POST /api/cases] Email error:", e)),
     ]).catch(() => {});
 
-    return NextResponse.json(ok(newCase), { status: 201 });
+    // Hydrate contact for the response so the caller can confirm what was linked
+    let contact: { id: string; name: string; email: string | null; phone: string | null; company: string | null } | null = null;
+    if (contactId) {
+      const { data: contactRow } = await sb
+        .from("contacts")
+        .select("id, name, email, phone, company")
+        .eq("id", contactId)
+        .maybeSingle();
+      contact = (contactRow as typeof contact) ?? null;
+    }
+
+    return NextResponse.json(ok({ ...newCase, contact }), { status: 201 });
   } catch (err) {
     console.error("[POST /api/cases] Error:", err);
     return NextResponse.json(fail("Failed to create case"), { status: 500 });

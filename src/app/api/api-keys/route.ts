@@ -71,6 +71,7 @@ export async function POST(request: Request) {
       name: `${payload.data.name} [${payload.data.scope}]`,
       keyHash,
       prefix,
+      isActive: true,
       expiresAt: payload.data.expiresAt ? new Date(payload.data.expiresAt).toISOString() : null,
     })
     .select("id, name, prefix, createdAt, expiresAt")
