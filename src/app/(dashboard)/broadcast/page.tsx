@@ -474,7 +474,7 @@ export default function BroadcastPage() {
                         {sendingId === b.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                       </button>
                     )}
-                    {["DRAFT", "COMPLETED", "FAILED"].includes(b.status) && (
+                    {b.status !== "SENDING" && (
                       <button onClick={() => void handleDelete(b.id)} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10" title="Delete">
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -959,9 +959,10 @@ export default function BroadcastPage() {
                   {sendingId === activeBroadcast.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Send Now
                 </button>
               )}
-              {["DRAFT", "COMPLETED", "FAILED"].includes(activeBroadcast.status) && (
+              {activeBroadcast.status !== "SENDING" && (
                 <button onClick={() => void handleDelete(activeBroadcast.id)} className="inline-flex items-center gap-2 rounded-lg border border-red-500/30 px-4 py-2 text-sm font-medium text-red-400 hover:bg-red-500/10">
-                  <Trash2 className="h-4 w-4" /> Delete
+                  <Trash2 className="h-4 w-4" />
+                  {activeBroadcast.status === "SCHEDULED" ? "Cancel & Delete" : "Delete"}
                 </button>
               )}
             </div>
