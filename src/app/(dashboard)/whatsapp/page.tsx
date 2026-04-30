@@ -25,6 +25,8 @@ import {
   Ban,
   Smile,
   Loader2,
+  Sparkles,
+  Trash2,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -90,7 +92,7 @@ function dateDivider(dateStr: string): string {
   return format(d, "EEE d MMM");
 }
 
-type Filter = "all" | "ai" | "human" | "unread";
+type Filter = "all" | "mine" | "ai" | "human" | "unread";
 
 /* ------------------------------------------------------------------ */
 /*  STATUS PILL                                                        */
@@ -273,6 +275,75 @@ export default function WhatsAppPage() {
   const [attaching, setAttaching] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Current user (for "My Chats" filter)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/auth/session");
+        const json = (await res.json()) as { user?: { id?: string } };
+        if (!cancelled) setCurrentUserId(json.user?.id ?? null);
+      } catch { /* ignore */ }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // Quick reply (chat-side templates)
+  type QuickReply = { id: string; title: string; content: string; createdAt: string };
+  const [quickRepliesOpen, setQuickRepliesOpen] = useState(false);
+  const [quickReplies, setQuickReplies] = useState<QuickReply[]>([]);
+  const [qrTitle, setQrTitle] = useState("");
+  const [qrContent, setQrContent] = useState("");
+  const [qrSaving, setQrSaving] = useState(false);
+  const [qrFormOpen, setQrFormOpen] = useState(false);
+
+  const loadQuickReplies = useCallback(async () => {
+    try {
+      const res = await fetch("/api/whatsapp/quick-replies");
+      const json = (await res.json()) as { data: QuickReply[] | null };
+      setQuickReplies(json.data ?? []);
+    } catch { /* silent */ }
+  }, []);
+
+  function openQuickReplies() {
+    setQuickRepliesOpen(true);
+    void loadQuickReplies();
+  }
+
+  function insertQuickReply(content: string) {
+    setReplyText((prev) => (prev ? prev + (prev.endsWith(" ") ? "" : " ") + content : content));
+    setQuickRepliesOpen(false);
+    textareaRef.current?.focus();
+  }
+
+  async function saveQuickReply() {
+    const title = qrTitle.trim();
+    const content = qrContent.trim();
+    if (!title || !content) { toast.error("Title and content are required"); return; }
+    setQrSaving(true);
+    try {
+      const res = await fetch("/api/whatsapp/quick-replies", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title, content }),
+      });
+      const json = (await res.json()) as { data: QuickReply | null; error: string | null };
+      if (!res.ok || !json.data) { toast.error(json.error ?? "Failed to save"); return; }
+      setQuickReplies((prev) => [json.data as QuickReply, ...prev]);
+      setQrTitle(""); setQrContent(""); setQrFormOpen(false);
+      toast.success("Quick reply saved");
+    } catch { toast.error("Failed to save"); }
+    finally { setQrSaving(false); }
+  }
+
+  async function deleteQuickReply(id: string) {
+    try {
+      await fetch(`/api/whatsapp/quick-replies/${id}`, { method: "DELETE" });
+      setQuickReplies((prev) => prev.filter((q) => q.id !== id));
+    } catch { toast.error("Failed to delete"); }
+  }
+
   // Template-send-to-conversation modal
   type TemplateLite = {
     id: string;
@@ -412,6 +483,13 @@ export default function WhatsAppPage() {
     if (filter === "ai" && c.handledBy !== "AI") return false;
     if (filter === "human" && c.handledBy !== "HUMAN") return false;
     if (filter === "unread" && c.unreadCount === 0) return false;
+    if (filter === "mine") {
+      // Only chats currently assigned to me AND being handled by a human
+      // (so handover-to-AI removes them from the list automatically).
+      if (!currentUserId) return false;
+      if (c.agentId !== currentUserId) return false;
+      if (c.handledBy === "AI") return false;
+    }
     return true;
   });
 
@@ -650,6 +728,7 @@ export default function WhatsAppPage() {
 
   const FILTERS: { key: Filter; label: string }[] = [
     { key: "all", label: "All" },
+    { key: "mine", label: "My Chats" },
     { key: "ai", label: "AI Handling" },
     { key: "human", label: "Human" },
     { key: "unread", label: "Unread" },
@@ -1385,6 +1464,26 @@ export default function WhatsAppPage() {
                     </span>
                   )}
                 </div>
+                <button
+                  type="button"
+                  onClick={openQuickReplies}
+                  title="Quick replies"
+                  aria-label="Quick replies"
+                  style={{
+                    width: 36,
+                    height: 36,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    border: "none",
+                    color: "#555",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  <Sparkles style={{ width: 18, height: 18 }} />
+                </button>
                 <div style={{ position: "relative" }}>
                   <button
                     type="button"
@@ -1441,6 +1540,237 @@ export default function WhatsAppPage() {
       </div>
 
       {/* ---- Send template modal ---- */}
+      {/* ---- Quick replies modal ---- */}
+      {quickRepliesOpen && (
+        <div
+          onClick={() => setQuickRepliesOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.6)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+            padding: 20,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              width: "100%",
+              maxWidth: 520,
+              maxHeight: "85vh",
+              background: "#0f0f0f",
+              border: "1px solid #2a2a2a",
+              borderRadius: 8,
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            <div
+              style={{
+                padding: "14px 18px",
+                borderBottom: "1px solid #1e1e1e",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+              }}
+            >
+              <div>
+                <h3 style={{ fontSize: 14, fontWeight: 600, color: "#fff", margin: 0 }}>Quick Replies</h3>
+                <p style={{ fontSize: 11, color: "#666", margin: "2px 0 0" }}>
+                  Saved snippets — click to insert into the reply box
+                </p>
+              </div>
+              <button
+                onClick={() => setQuickRepliesOpen(false)}
+                style={{
+                  width: 28,
+                  height: 28,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  background: "transparent",
+                  border: "none",
+                  color: "#666",
+                  cursor: "pointer",
+                  borderRadius: 4,
+                }}
+                aria-label="Close"
+              >
+                <X style={{ width: 16, height: 16 }} />
+              </button>
+            </div>
+
+            <div style={{ padding: 18, overflowY: "auto", flex: 1 }}>
+              {/* Add new */}
+              {qrFormOpen ? (
+                <div style={{ marginBottom: 14, padding: 12, border: "1px solid #2a2a2a", borderRadius: 4, background: "#0a0a0a" }}>
+                  <input
+                    value={qrTitle}
+                    onChange={(e) => setQrTitle(e.target.value)}
+                    placeholder="Title (e.g. Greeting, Closing, FAQ link)"
+                    maxLength={80}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      background: "#0a0a0a",
+                      border: "1px solid #2a2a2a",
+                      borderRadius: 4,
+                      color: "#fff",
+                      fontSize: 12,
+                      outline: "none",
+                      marginBottom: 8,
+                    }}
+                  />
+                  <textarea
+                    value={qrContent}
+                    onChange={(e) => setQrContent(e.target.value)}
+                    placeholder="Message content (you can use emojis 🙂)"
+                    rows={4}
+                    style={{
+                      width: "100%",
+                      padding: "8px 10px",
+                      background: "#0a0a0a",
+                      border: "1px solid #2a2a2a",
+                      borderRadius: 4,
+                      color: "#fff",
+                      fontSize: 12,
+                      outline: "none",
+                      resize: "vertical",
+                      fontFamily: "inherit",
+                    }}
+                  />
+                  <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 8 }}>
+                    <button
+                      onClick={() => { setQrFormOpen(false); setQrTitle(""); setQrContent(""); }}
+                      style={{
+                        padding: "6px 12px",
+                        background: "transparent",
+                        border: "1px solid #333",
+                        borderRadius: 4,
+                        color: "#ccc",
+                        fontSize: 11,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => void saveQuickReply()}
+                      disabled={qrSaving || !qrTitle.trim() || !qrContent.trim()}
+                      style={{
+                        padding: "6px 12px",
+                        background: qrTitle.trim() && qrContent.trim() && !qrSaving ? "#df5641" : "#333",
+                        border: "none",
+                        borderRadius: 4,
+                        color: "#fff",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: qrTitle.trim() && qrContent.trim() && !qrSaving ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      {qrSaving ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setQrFormOpen(true)}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 6,
+                    padding: "6px 12px",
+                    background: "transparent",
+                    border: "1px dashed #333",
+                    borderRadius: 4,
+                    color: "#888",
+                    fontSize: 11,
+                    cursor: "pointer",
+                    marginBottom: 14,
+                  }}
+                >
+                  <Plus style={{ width: 12, height: 12 }} />
+                  New Quick Reply
+                </button>
+              )}
+
+              {/* List */}
+              {quickReplies.length === 0 ? (
+                <p style={{ fontSize: 12, color: "#666" }}>No quick replies yet. Add one above.</p>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {quickReplies.map((q) => (
+                    <div
+                      key={q.id}
+                      style={{
+                        padding: "10px 12px",
+                        background: "#1a1a1a",
+                        border: "1px solid #2a2a2a",
+                        borderRadius: 4,
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "flex-start",
+                      }}
+                    >
+                      <button
+                        onClick={() => insertQuickReply(q.content)}
+                        style={{
+                          flex: 1,
+                          textAlign: "left",
+                          background: "transparent",
+                          border: "none",
+                          color: "#fff",
+                          cursor: "pointer",
+                          padding: 0,
+                        }}
+                      >
+                        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{q.title}</div>
+                        <p
+                          style={{
+                            fontSize: 11,
+                            color: "#888",
+                            margin: 0,
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            display: "-webkit-box",
+                            WebkitLineClamp: 2,
+                            WebkitBoxOrient: "vertical",
+                          }}
+                        >
+                          {q.content}
+                        </p>
+                      </button>
+                      <button
+                        onClick={() => void deleteQuickReply(q.id)}
+                        title="Delete"
+                        style={{
+                          width: 24,
+                          height: 24,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          background: "transparent",
+                          border: "none",
+                          color: "#666",
+                          cursor: "pointer",
+                          borderRadius: 3,
+                        }}
+                      >
+                        <Trash2 style={{ width: 13, height: 13 }} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {tplModalOpen && (
         <div
           onClick={() => setTplModalOpen(false)}

@@ -1,6 +1,76 @@
-import { NextResponse } from "next/server";
+import { randomUUID } from "crypto";
+import { after, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { triggerPusherEvent } from "@/lib/pusher";
+import { StorageBuckets, uploadToBucket } from "@/lib/supabase/storage";
+
+// Resolve a WhatsApp media ID into a public Supabase Storage URL.
+// Two-step Meta flow: GET /<id> returns a short-lived signed URL that requires
+// the bearer token to download. We download with the token then re-host on Supabase.
+async function downloadAndStoreWhatsAppMedia(
+  mediaId: string,
+  conversationId: string,
+): Promise<{ url: string; contentType: string } | null> {
+  const token = process.env.WHATSAPP_TOKEN;
+  if (!token) {
+    console.error("[whatsapp-media] WHATSAPP_TOKEN not configured");
+    return null;
+  }
+
+  try {
+    // Step 1: get the temporary URL + mime
+    const metaRes = await fetch(`https://graph.facebook.com/v19.0/${mediaId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!metaRes.ok) {
+      console.error("[whatsapp-media] meta lookup failed:", metaRes.status, await metaRes.text().catch(() => ""));
+      return null;
+    }
+    const metaJson = (await metaRes.json()) as {
+      url?: string;
+      mime_type?: string;
+      file_size?: number;
+    };
+    if (!metaJson.url) {
+      console.error("[whatsapp-media] meta returned no url");
+      return null;
+    }
+
+    // Step 2: download the file (also needs the token)
+    const fileRes = await fetch(metaJson.url, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!fileRes.ok) {
+      console.error("[whatsapp-media] file download failed:", fileRes.status);
+      return null;
+    }
+    const buffer = await fileRes.arrayBuffer();
+
+    // Pick an extension from the mime type
+    const mime = metaJson.mime_type ?? "application/octet-stream";
+    const ext =
+      mime.includes("jpeg") ? "jpg" :
+      mime.includes("png") ? "png" :
+      mime.includes("webp") ? "webp" :
+      mime.includes("gif") ? "gif" :
+      mime.includes("mp4") ? "mp4" :
+      mime.includes("3gpp") ? "3gp" :
+      mime.includes("webm") ? "webm" :
+      mime.includes("ogg") ? "ogg" :
+      mime.includes("mpeg") ? "mp3" :
+      mime.includes("aac") ? "aac" :
+      mime.includes("amr") ? "amr" :
+      mime.includes("pdf") ? "pdf" :
+      "bin";
+
+    const key = `${conversationId}/inbound/${randomUUID()}.${ext}`;
+    const uploaded = await uploadToBucket(StorageBuckets.WhatsAppMedia, key, buffer, mime);
+    return { url: uploaded.url, contentType: mime };
+  } catch (err) {
+    console.error("[whatsapp-media] error:", err);
+    return null;
+  }
+}
 
 // WhatsApp webhook verification
 export async function GET(request: Request) {
@@ -128,17 +198,19 @@ export async function POST(request: Request) {
             : new Date();
 
           let body = "";
-          let mediaUrl: string | null = null;
           let mediaType: string | null = null;
+          let mediaWaId: string | null = null; // WhatsApp media ID (NOT a URL)
+          let documentFilename: string | null = null;
 
           if (msgType === "text") {
             const text = msg.text as Record<string, unknown> | undefined;
             body = typeof text?.body === "string" ? text.body : "";
-          } else if (["image", "video", "audio", "document"].includes(msgType)) {
-            mediaType = msgType;
+          } else if (["image", "video", "audio", "document", "sticker"].includes(msgType)) {
+            mediaType = msgType === "sticker" ? "image" : msgType;
             const mediaObj = msg[msgType] as Record<string, unknown> | undefined;
             body = typeof mediaObj?.caption === "string" ? mediaObj.caption : `[${msgType}]`;
-            mediaUrl = typeof mediaObj?.id === "string" ? mediaObj.id : null;
+            mediaWaId = typeof mediaObj?.id === "string" ? mediaObj.id : null;
+            documentFilename = typeof mediaObj?.filename === "string" ? mediaObj.filename : null;
           }
 
           if (!from) continue;
@@ -198,21 +270,48 @@ export async function POST(request: Request) {
             handledBy = nc.handledBy;
           }
 
-          // Save inbound message
-          const { error: msgErr } = await sb.from("whatsapp_messages").insert({
-            conversationId,
-            whatsappMsgId: msgId,
-            direction: "inbound",
-            sender: "customer",
-            senderName: contactName,
-            body,
-            mediaUrl,
-            mediaType,
-            isAI: false,
-            status: "delivered",
-            timestamp: tsIso,
-          });
+          // Save inbound message FIRST (without mediaUrl), so the chat shows it immediately.
+          // The actual media URL is resolved+stored asynchronously below.
+          const { data: insertedRow, error: msgErr } = await sb
+            .from("whatsapp_messages")
+            .insert({
+              conversationId,
+              whatsappMsgId: msgId,
+              direction: "inbound",
+              sender: "customer",
+              senderName: contactName,
+              body: documentFilename ? `${body} (${documentFilename})` : body,
+              mediaUrl: null,
+              mediaType,
+              isAI: false,
+              status: "delivered",
+              timestamp: tsIso,
+            })
+            .select("id")
+            .single();
           if (msgErr) console.error("[WhatsApp Webhook] Save message failed:", msgErr.message);
+          const insertedMessageId = insertedRow ? (insertedRow as { id: string }).id : null;
+
+          // Resolve media after the response. This downloads from Meta, uploads to Supabase
+          // Storage, and patches the message row with the public URL when done.
+          if (mediaWaId && mediaType && insertedMessageId) {
+            after(async () => {
+              const result = await downloadAndStoreWhatsAppMedia(mediaWaId!, conversationId);
+              if (!result) return;
+              const sbAfter = supabaseAdmin();
+              await sbAfter
+                .from("whatsapp_messages")
+                .update({ mediaUrl: result.url })
+                .eq("id", insertedMessageId);
+
+              // Push the updated message so the open chat refreshes
+              await triggerPusherEvent(`conversation-${conversationId}`, "whatsapp:media_ready", {
+                conversationId,
+                messageId: insertedMessageId,
+                mediaUrl: result.url,
+              }).catch(() => {});
+            });
+          }
 
           // If AI is handling, forward to AI agent webhook
           if (handledBy === "AI" && process.env.AI_AGENT_WEBHOOK_URL) {
@@ -225,7 +324,7 @@ export async function POST(request: Request) {
                 contactName,
                 messageId: msgId,
                 body,
-                mediaUrl,
+                mediaWaId,
                 mediaType,
                 handledBy,
                 timestamp: tsIso,
