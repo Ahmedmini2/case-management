@@ -22,7 +22,19 @@ function isAuthorized(request: Request): boolean {
   return false;
 }
 
-async function dispatch() {
+function resolveBaseUrl(request: Request): string {
+  // Prefer explicit config; fall back to the request's own host (works on Vercel without env);
+  // use VERCEL_URL as a last resort for non-custom-domain deployments.
+  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
+  try {
+    const u = new URL(request.url);
+    if (u.host && u.host !== "localhost:3000") return `${u.protocol}//${u.host}`;
+  } catch { /* ignore */ }
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return "http://localhost:3000";
+}
+
+async function dispatch(request: Request) {
   const sb = supabaseAdmin();
   const nowIso = new Date().toISOString();
 
@@ -43,7 +55,7 @@ async function dispatch() {
   const due = (dueRaw ?? []) as { id: string }[];
   if (due.length === 0) return { triggered: 0, errors: [] };
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const baseUrl = resolveBaseUrl(request);
   const cronSecret = process.env.CRON_SECRET ?? "";
 
   const errors: string[] = [];
@@ -74,7 +86,7 @@ export async function GET(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
-  const result = await dispatch();
+  const result = await dispatch(request);
   return NextResponse.json(ok(result));
 }
 
@@ -82,6 +94,6 @@ export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
-  const result = await dispatch();
+  const result = await dispatch(request);
   return NextResponse.json(ok(result));
 }
