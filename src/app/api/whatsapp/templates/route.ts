@@ -36,6 +36,9 @@ export async function POST(request: Request) {
     language?: string;
     body?: string;
     header?: string;
+    headerType?: string;
+    headerMediaUrl?: string;
+    headerMediaHandle?: string;
     footer?: string;
     buttons?: ButtonInput[];
   };
@@ -44,9 +47,26 @@ export async function POST(request: Request) {
   const category = typeof body.category === "string" ? body.category.toUpperCase() : "MARKETING";
   const language = typeof body.language === "string" ? body.language : "en";
   const templateBody = typeof body.body === "string" ? body.body.trim() : "";
+  const headerType = (typeof body.headerType === "string" ? body.headerType.toUpperCase() : "TEXT") as
+    | "TEXT"
+    | "IMAGE"
+    | "VIDEO"
+    | "DOCUMENT";
   const header = typeof body.header === "string" ? body.header.trim() : null;
+  const headerMediaUrl = typeof body.headerMediaUrl === "string" ? body.headerMediaUrl : null;
+  const headerMediaHandle = typeof body.headerMediaHandle === "string" ? body.headerMediaHandle : null;
   const footer = typeof body.footer === "string" ? body.footer.trim() : null;
   const buttonsInput = Array.isArray(body.buttons) ? body.buttons.slice(0, 10) : [];
+
+  if (!["TEXT", "IMAGE", "VIDEO", "DOCUMENT"].includes(headerType)) {
+    return NextResponse.json(fail("Invalid headerType"), { status: 400 });
+  }
+  if (headerType !== "TEXT" && !headerMediaHandle) {
+    return NextResponse.json(
+      fail("Media headers require uploading the example file first (use /api/whatsapp/templates/upload-header)"),
+      { status: 400 },
+    );
+  }
 
   if (!name) return NextResponse.json(fail("Template name is required"), { status: 400 });
   if (!templateBody) return NextResponse.json(fail("Template body is required"), { status: 400 });
@@ -84,8 +104,14 @@ export async function POST(request: Request) {
 
   const components: Record<string, unknown>[] = [];
 
-  if (header) {
+  if (headerType === "TEXT" && header) {
     components.push({ type: "HEADER", format: "TEXT", text: header });
+  } else if (headerType !== "TEXT" && headerMediaHandle) {
+    components.push({
+      type: "HEADER",
+      format: headerType,
+      example: { header_handle: [headerMediaHandle] },
+    });
   }
 
   components.push({
@@ -145,7 +171,10 @@ export async function POST(request: Request) {
         category,
         status: "PENDING",
         body: templateBody,
-        header,
+        header: headerType === "TEXT" ? header : null,
+        headerType,
+        headerMediaUrl: headerType !== "TEXT" ? headerMediaUrl : null,
+        headerMediaHandle: headerType !== "TEXT" ? headerMediaHandle : null,
         footer,
         buttons: buttonsInput.length > 0 ? buttonsInput : null,
         variableCount,

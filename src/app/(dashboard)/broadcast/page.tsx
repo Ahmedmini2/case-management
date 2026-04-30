@@ -13,6 +13,8 @@ import {
 /*  TYPES                                                              */
 /* ------------------------------------------------------------------ */
 
+type HeaderType = "TEXT" | "IMAGE" | "VIDEO" | "DOCUMENT";
+
 type TemplateButton =
   | { type: "QUICK_REPLY"; text: string }
   | { type: "URL"; text: string; url: string }
@@ -27,6 +29,8 @@ interface Template {
   status: string;
   body: string;
   header: string | null;
+  headerType: HeaderType | null;
+  headerMediaUrl: string | null;
   footer: string | null;
   buttons: TemplateButton[] | null;
   variableCount: number;
@@ -133,7 +137,12 @@ export default function BroadcastPage() {
   const [tplCategory, setTplCategory] = useState("MARKETING");
   const [tplLang, setTplLang] = useState("en");
   const [tplBody, setTplBody] = useState("");
+  const [tplHeaderType, setTplHeaderType] = useState<HeaderType>("TEXT");
   const [tplHeader, setTplHeader] = useState("");
+  const [tplHeaderMediaUrl, setTplHeaderMediaUrl] = useState("");
+  const [tplHeaderMediaHandle, setTplHeaderMediaHandle] = useState("");
+  const [tplHeaderUploading, setTplHeaderUploading] = useState(false);
+  const tplHeaderInputRef = useRef<HTMLInputElement>(null);
   const [tplFooter, setTplFooter] = useState("");
   const [tplButtons, setTplButtons] = useState<TemplateButton[]>([]);
   const [tplCreating, setTplCreating] = useState(false);
@@ -206,8 +215,31 @@ export default function BroadcastPage() {
     setSyncing(false);
   }
 
+  async function uploadTplHeaderMedia(file: File, headerType: Exclude<HeaderType, "TEXT">) {
+    setTplHeaderUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", file);
+      form.append("headerType", headerType);
+      const res = await fetch("/api/whatsapp/templates/upload-header", { method: "POST", body: form });
+      const json = (await res.json()) as { data: { url?: string; handle?: string } | null; error: string | null };
+      if (!res.ok || !json.data?.url || !json.data?.handle) {
+        toast.error(json.error ?? "Upload failed");
+        return;
+      }
+      setTplHeaderMediaUrl(json.data.url);
+      setTplHeaderMediaHandle(json.data.handle);
+      toast.success("Header media uploaded");
+    } catch { toast.error("Upload failed"); }
+    finally { setTplHeaderUploading(false); }
+  }
+
   async function createTemplate() {
     if (!tplName.trim() || !tplBody.trim()) { toast.error("Name and body are required"); return; }
+    if (tplHeaderType !== "TEXT" && !tplHeaderMediaHandle) {
+      toast.error(`Upload an example ${tplHeaderType.toLowerCase()} for the header first`);
+      return;
+    }
     setTplCreating(true);
     try {
       const res = await fetch("/api/whatsapp/templates", {
@@ -215,14 +247,21 @@ export default function BroadcastPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: tplName, category: tplCategory, language: tplLang,
-          body: tplBody, header: tplHeader || null, footer: tplFooter || null,
+          body: tplBody,
+          headerType: tplHeaderType,
+          header: tplHeaderType === "TEXT" ? (tplHeader || null) : null,
+          headerMediaUrl: tplHeaderType !== "TEXT" ? tplHeaderMediaUrl : null,
+          headerMediaHandle: tplHeaderType !== "TEXT" ? tplHeaderMediaHandle : null,
+          footer: tplFooter || null,
           buttons: tplButtons.length > 0 ? tplButtons : undefined,
         }),
       });
       const json = (await res.json()) as { error?: string };
       if (!res.ok) { toast.error(json.error ?? "Failed"); } else {
         toast.success("Template submitted to Meta for review");
-        setTplName(""); setTplBody(""); setTplHeader(""); setTplFooter(""); setTplButtons([]); setShowTplForm(false);
+        setTplName(""); setTplBody(""); setTplHeader(""); setTplFooter(""); setTplButtons([]);
+        setTplHeaderType("TEXT"); setTplHeaderMediaUrl(""); setTplHeaderMediaHandle("");
+        setShowTplForm(false);
         await loadTemplates();
       }
     } catch { toast.error("Failed to create template"); }
@@ -494,9 +533,106 @@ export default function BroadcastPage() {
                 </select>
               </div>
             </div>
-            <div className="space-y-1">
+            {/* Header — TEXT or media (IMAGE/VIDEO/DOCUMENT) */}
+            <div className="space-y-2">
               <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Header (optional)</label>
-              <input value={tplHeader} onChange={(e) => setTplHeader(e.target.value)} placeholder="Optional header text" className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
+              <div className="grid grid-cols-4 gap-1 rounded-lg border bg-background p-1">
+                {(["TEXT", "IMAGE", "VIDEO", "DOCUMENT"] as HeaderType[]).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => {
+                      setTplHeaderType(t);
+                      if (t === "TEXT") { setTplHeaderMediaUrl(""); setTplHeaderMediaHandle(""); }
+                      else { setTplHeader(""); }
+                    }}
+                    className={`rounded-md px-3 py-1.5 text-[11px] font-medium transition ${
+                      tplHeaderType === t
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    {t === "TEXT" ? "Text" : t === "IMAGE" ? "Image" : t === "VIDEO" ? "Video" : "Document"}
+                  </button>
+                ))}
+              </div>
+
+              {tplHeaderType === "TEXT" && (
+                <input
+                  value={tplHeader}
+                  onChange={(e) => setTplHeader(e.target.value)}
+                  placeholder="Optional header text (max 60 chars)"
+                  maxLength={60}
+                  className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                />
+              )}
+
+              {tplHeaderType !== "TEXT" && (
+                <div className="space-y-2">
+                  <input
+                    ref={tplHeaderInputRef}
+                    type="file"
+                    accept={
+                      tplHeaderType === "IMAGE" ? "image/jpeg,image/png" :
+                      tplHeaderType === "VIDEO" ? "video/mp4,video/3gpp" :
+                      "application/pdf"
+                    }
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void uploadTplHeaderMedia(f, tplHeaderType);
+                      e.target.value = "";
+                    }}
+                    className="hidden"
+                  />
+                  {!tplHeaderMediaUrl ? (
+                    <button
+                      type="button"
+                      onClick={() => tplHeaderInputRef.current?.click()}
+                      disabled={tplHeaderUploading}
+                      className="inline-flex items-center gap-2 rounded-lg border border-dashed bg-background px-4 py-3 text-sm hover:border-primary disabled:opacity-60 w-full justify-center"
+                    >
+                      {tplHeaderUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                      {tplHeaderUploading ? "Uploading…" : `Upload example ${tplHeaderType.toLowerCase()}`}
+                    </button>
+                  ) : (
+                    <div className="flex items-center gap-2 rounded-lg border bg-muted/30 p-2">
+                      {tplHeaderType === "IMAGE" && (
+                        <img src={tplHeaderMediaUrl} alt="" className="h-12 w-12 rounded object-cover" />
+                      )}
+                      {tplHeaderType === "VIDEO" && (
+                        <div className="flex h-12 w-12 items-center justify-center rounded bg-muted">
+                          <Send className="h-4 w-4" />
+                        </div>
+                      )}
+                      {tplHeaderType === "DOCUMENT" && (
+                        <FileText className="h-8 w-8 text-muted-foreground" />
+                      )}
+                      <a
+                        href={tplHeaderMediaUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex-1 truncate text-xs text-primary hover:underline"
+                      >
+                        Preview uploaded {tplHeaderType.toLowerCase()}
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => { setTplHeaderMediaUrl(""); setTplHeaderMediaHandle(""); }}
+                        className="text-muted-foreground hover:text-destructive p-1"
+                        aria-label="Remove"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-muted-foreground/70">
+                    {tplHeaderType === "IMAGE" && "JPG/PNG, max 5 MB"}
+                    {tplHeaderType === "VIDEO" && "MP4/3GP, max 16 MB"}
+                    {tplHeaderType === "DOCUMENT" && "PDF, max 100 MB"}
+                    {" — Meta requires a sample for approval. Uploaded once, reused for every broadcast."}
+                  </p>
+                </div>
+              )}
             </div>
             <div className="space-y-1">
               <div className="flex items-center justify-between">

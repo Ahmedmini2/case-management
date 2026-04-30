@@ -29,7 +29,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // Load template
   const { data: tplRow, error: tplErr } = await sb
     .from("whatsapp_templates")
-    .select("id, name, language, status, body, variableCount")
+    .select("id, name, language, status, body, variableCount, headerType, headerMediaUrl")
     .eq("id", templateId)
     .maybeSingle();
   if (tplErr) return NextResponse.json(fail(tplErr.message), { status: 500 });
@@ -41,6 +41,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     status: string;
     body: string;
     variableCount: number;
+    headerType: string | null;
+    headerMediaUrl: string | null;
   };
   if (template.status !== "APPROVED") {
     return NextResponse.json(
@@ -67,6 +69,16 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
 
   // Build components for Meta API
   const components: Record<string, unknown>[] = [];
+
+  if (template.headerType && template.headerType !== "TEXT" && template.headerMediaUrl) {
+    const fmt = template.headerType.toLowerCase();
+    const param: Record<string, unknown> = { type: fmt };
+    if (fmt === "image") param.image = { link: template.headerMediaUrl };
+    else if (fmt === "video") param.video = { link: template.headerMediaUrl };
+    else if (fmt === "document") param.document = { link: template.headerMediaUrl, filename: "document.pdf" };
+    components.push({ type: "header", parameters: [param] });
+  }
+
   if (template.variableCount > 0) {
     const parameters = Array.from({ length: template.variableCount }, (_, i) => ({
       type: "text",

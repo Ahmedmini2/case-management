@@ -38,19 +38,21 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   if (broadcast.status === "SENDING") return NextResponse.json(fail("Broadcast is already sending"), { status: 400 });
   if (broadcast.status === "COMPLETED") return NextResponse.json(fail("Broadcast already completed"), { status: 400 });
 
-  // Load the template
+  // Load the template (incl. media header info for runtime header parameter)
   type Tpl = {
     id: string;
     name: string;
     language: string;
     status: string;
     variableCount: number;
+    headerType: string | null;
+    headerMediaUrl: string | null;
   };
   let template: Tpl | null = null;
   if (broadcast.templateId) {
     const { data: tplRow } = await sb
       .from("whatsapp_templates")
-      .select("id, name, language, status, variableCount")
+      .select("id, name, language, status, variableCount, headerType, headerMediaUrl")
       .eq("id", broadcast.templateId)
       .maybeSingle();
     template = (tplRow as Tpl | null) ?? null;
@@ -103,6 +105,17 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const broadcastMessage = broadcast.message;
 
   const components: Record<string, unknown>[] = [];
+
+  // Header media component (matches what was registered with Meta at template approval time)
+  if (template.headerType && template.headerType !== "TEXT" && template.headerMediaUrl) {
+    const fmt = template.headerType.toLowerCase(); // "image" | "video" | "document"
+    const param: Record<string, unknown> = { type: fmt };
+    if (fmt === "image") param.image = { link: template.headerMediaUrl };
+    else if (fmt === "video") param.video = { link: template.headerMediaUrl };
+    else if (fmt === "document") param.document = { link: template.headerMediaUrl, filename: "document.pdf" };
+    components.push({ type: "header", parameters: [param] });
+  }
+
   if (variableCount > 0) {
     const parameters = Array.from({ length: variableCount }, (_, i) => ({
       type: "text",

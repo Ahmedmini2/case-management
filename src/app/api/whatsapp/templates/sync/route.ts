@@ -91,6 +91,7 @@ export async function POST() {
         .limit(1)
         .maybeSingle();
 
+      const headerFormat = (headerComp?.format ?? "TEXT").toUpperCase();
       const payload = {
         metaId: t.id,
         name: t.name,
@@ -98,7 +99,8 @@ export async function POST() {
         category: t.category,
         status: mapStatus(t.status),
         body,
-        header: headerComp?.text ?? null,
+        header: headerFormat === "TEXT" ? headerComp?.text ?? null : null,
+        headerType: ["TEXT", "IMAGE", "VIDEO", "DOCUMENT"].includes(headerFormat) ? headerFormat : "TEXT",
         footer: footerComp?.text ?? null,
         buttons,
         variableCount,
