@@ -14,6 +14,7 @@ export async function GET(request: Request) {
   const handledBy = searchParams.get("handledBy");
   const search = searchParams.get("search");
   const unreadOnly = searchParams.get("unreadOnly");
+  const phone = searchParams.get("phone");
 
   const sb = supabaseAdmin();
   let query = sb
@@ -25,6 +26,14 @@ export async function GET(request: Request) {
   if (status) query = query.eq("status", status.toUpperCase());
   if (handledBy) query = query.eq("handledBy", handledBy.toUpperCase());
   if (unreadOnly === "true") query = query.gt("unreadCount", 0);
+  if (phone) {
+    // Match either +<digits> or just <digits>. The webhook stores Meta's raw value
+    // (no `+`), while user-typed numbers usually carry a `+`. Try both.
+    const digits = phone.replace(/\D/g, "");
+    if (digits) {
+      query = query.in("contactPhone", [digits, `+${digits}`]);
+    }
+  }
   if (search) {
     query = query.or(
       `contactName.ilike.%${search}%,contactPhone.ilike.%${search}%,lastMessage.ilike.%${search}%`,

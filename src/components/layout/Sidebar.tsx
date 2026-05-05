@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { usePathname } from "next/navigation";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   Bell,
   Bot,
@@ -15,6 +15,8 @@ import {
   LayoutList,
   LifeBuoy,
   Map,
+  PanelLeftClose,
+  PanelLeftOpen,
   Radio,
   Settings,
   ShieldCheck,
@@ -64,18 +66,22 @@ function NavItem({
   icon: Icon,
   active,
   iconColor,
+  collapsed,
 }: {
   href: string;
   label: string;
   icon: React.ElementType;
   active: boolean;
   iconColor?: string;
+  collapsed?: boolean;
 }) {
   return (
     <Link
       href={href}
+      title={collapsed ? label : undefined}
       className={cn(
-        "group flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-all duration-150",
+        "group flex items-center gap-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+        collapsed ? "justify-center px-0 py-2" : "px-3 py-2",
         active
           ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm shadow-black/20"
           : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground",
@@ -88,8 +94,8 @@ function NavItem({
         )}
         style={iconColor ? { color: iconColor } : undefined}
       />
-      <span className="truncate">{label}</span>
-      {active && <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 opacity-70" />}
+      {!collapsed && <span className="truncate">{label}</span>}
+      {!collapsed && active && <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 opacity-70" />}
     </Link>
   );
 }
@@ -97,6 +103,18 @@ function NavItem({
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const [collapsed, setCollapsed] = useState(false);
+
+  // Hydrate persisted state. SSR renders expanded; client may flip after mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (window.localStorage.getItem("sidebar.collapsed") === "1") setCollapsed(true);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("sidebar.collapsed", collapsed ? "1" : "0");
+  }, [collapsed]);
 
   useEffect(() => {
     for (const item of [...coreItems, ...settingsItems]) {
@@ -104,35 +122,59 @@ export function Sidebar() {
     }
   }, [router]);
 
-  const isSettingsActive = pathname.startsWith("/settings");
+  // (settings active state is computed inline where needed)
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col border-r bg-sidebar">
+    <aside
+      className={cn(
+        "flex shrink-0 flex-col border-r bg-sidebar transition-[width] duration-200 ease-out",
+        collapsed ? "w-14" : "w-64",
+      )}
+    >
       {/* Logo / Brand */}
-      <div className="flex h-16 items-center gap-3 border-b border-sidebar-border px-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded bg-[#df5641] shadow-sm">
+      <div className={cn("flex h-16 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "gap-3 px-5")}>
+        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-[#df5641] shadow-sm">
           <span className="text-sm font-black text-white leading-none">D</span>
         </div>
-        <div>
-          <p className="text-sm font-bold tracking-widest uppercase text-sidebar-foreground">The Dungeon</p>
-          <p className="text-[10px] text-sidebar-foreground/40 uppercase tracking-widest">Support Hub</p>
-        </div>
+        {!collapsed && (
+          <div className="min-w-0">
+            <p className="text-sm font-bold tracking-widest uppercase text-sidebar-foreground">The Dungeon</p>
+            <p className="text-[10px] text-sidebar-foreground/40 uppercase tracking-widest">Support Hub</p>
+          </div>
+        )}
       </div>
 
+      {/* Collapse toggle */}
+      <button
+        type="button"
+        onClick={() => setCollapsed((v) => !v)}
+        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+        className={cn(
+          "mx-2 mt-2 flex h-8 items-center gap-2 rounded-md text-xs font-medium text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors",
+          collapsed ? "justify-center px-0" : "justify-start px-2",
+        )}
+      >
+        {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+        {!collapsed && <span>Collapse</span>}
+      </button>
+
       {/* Scrollable nav */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5">
+      <nav className={cn("flex-1 overflow-y-auto py-4 space-y-5", collapsed ? "px-2" : "px-3")}>
         {/* Core section */}
         <div>
-          <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
-            Menu
-          </p>
+          {!collapsed && (
+            <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
+              Menu
+            </p>
+          )}
           <div className="space-y-0.5">
             {coreItems.map((item) => {
               const active =
                 item.href === "/reports"
                   ? pathname === "/" || pathname === "/reports"
                   : pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return <NavItem key={item.href} {...item} active={active} />;
+              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} />;
             })}
           </div>
         </div>
@@ -142,22 +184,26 @@ export function Sidebar() {
 
         {/* Settings section */}
         <div>
-          <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
-            Settings
-          </p>
+          {!collapsed && (
+            <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
+              Settings
+            </p>
+          )}
           <div className="space-y-0.5">
             {settingsItems.map((item) => {
               const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return <NavItem key={item.href} {...item} active={active} />;
+              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} />;
             })}
           </div>
         </div>
       </nav>
 
       {/* Footer */}
-      <div className="border-t border-sidebar-border px-4 py-3">
-        <p className="text-[10px] text-sidebar-foreground/25 text-center">The Dungeon Gear &middot; Dubai</p>
-      </div>
+      {!collapsed && (
+        <div className="border-t border-sidebar-border px-4 py-3">
+          <p className="text-[10px] text-sidebar-foreground/25 text-center">The Dungeon Gear &middot; Dubai</p>
+        </div>
+      )}
     </aside>
   );
 }
