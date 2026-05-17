@@ -10,6 +10,7 @@ const updateSchema = z.object({
   phone: z.string().nullable().optional(),
   company: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  tags: z.array(z.string().min(1).max(60)).max(50).optional(),
 });
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -20,7 +21,7 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
   const sb = supabaseAdmin();
   const { data: contact, error } = await sb
     .from("contacts")
-    .select("id, name, email, phone, company, avatarUrl, notes, createdAt, updatedAt")
+    .select("id, name, email, phone, company, avatarUrl, notes, tags, createdAt, updatedAt")
     .eq("id", id)
     .maybeSingle();
 
@@ -90,11 +91,16 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (findErr) return NextResponse.json(fail(findErr.message), { status: 500 });
   if (!existing) return NextResponse.json(fail("Contact not found"), { status: 404 });
 
+  const payload: Record<string, unknown> = { ...parsed.data };
+  if (parsed.data.tags) {
+    payload.tags = [...new Set(parsed.data.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))];
+  }
+
   const { data, error } = await sb
     .from("contacts")
-    .update(parsed.data)
+    .update(payload)
     .eq("id", id)
-    .select("id, name, email, phone, company, notes")
+    .select("id, name, email, phone, company, notes, tags")
     .single();
 
   if (error) return NextResponse.json(fail(error.message), { status: 500 });

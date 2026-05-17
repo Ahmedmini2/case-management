@@ -907,7 +907,7 @@ export default function WhatsAppPage() {
   ];
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 64px)", margin: "-24px -24px 0 -24px", overflow: "hidden" }}>
+    <div style={{ display: "flex", height: "calc(100vh - 64px)", margin: "-24px -24px 0 -24px", overflow: "hidden", fontFamily: 'system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Arial", "Tahoma", "Noto Sans Arabic", "Geeza Pro", sans-serif' }}>
       {/* =================== LEFT PANEL =================== */}
       <div
         style={{
@@ -1086,7 +1086,7 @@ export default function WhatsAppPage() {
                     gap: 12,
                     width: "100%",
                     padding: "12px 16px",
-                    height: 72,
+                    minHeight: 78,
                     background: isActive ? "#1a1a1a" : "transparent",
                     borderLeft: isActive ? "3px solid #fff" : "3px solid transparent",
                     borderBottom: "1px solid #141414",
@@ -1119,20 +1119,49 @@ export default function WhatsAppPage() {
                   </div>
 
                   {/* Content */}
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 2 }}>
-                      <span style={{ fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                    {/* Row 1: name + timestamp */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <span dir="auto" style={{ fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
                         {conv.contactName}
                       </span>
-                      <span style={{ fontSize: 11, color: "#555", flexShrink: 0, marginLeft: 8 }}>
+                      <span style={{ fontSize: 11, color: "#555", flexShrink: 0 }}>
                         {formatDistanceToNow(new Date(conv.lastMessageAt), { addSuffix: false })}
                       </span>
                     </div>
-                    <div style={{ marginBottom: 3 }}>
+
+                    {/* Row 2: status pill + tags inline */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "nowrap", overflow: "hidden" }}>
                       <StatusPill status={conv.status} handledBy={conv.handledBy} />
+                      {(conv.tags ?? []).slice(0, 2).map((tag) => (
+                        <span
+                          key={tag}
+                          style={{
+                            fontSize: 10,
+                            padding: "2px 6px",
+                            background: "#df564120",
+                            color: "#df5641",
+                            borderRadius: 3,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            maxWidth: 90,
+                            flexShrink: 1,
+                          }}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {(conv.tags ?? []).length > 2 && (
+                        <span style={{ fontSize: 10, color: "#777", whiteSpace: "nowrap", flexShrink: 0 }}>
+                          +{(conv.tags ?? []).length - 2}
+                        </span>
+                      )}
                     </div>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                      <span style={{ fontSize: 12, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+
+                    {/* Row 3: last message preview + unread count */}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <span dir="auto" style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
                         {conv.lastMessage ?? "No messages"}
                       </span>
                       {conv.unreadCount > 0 && (
@@ -1144,26 +1173,18 @@ export default function WhatsAppPage() {
                             fontWeight: 700,
                             minWidth: 18,
                             height: 18,
-                            borderRadius: "50%",
+                            padding: "0 5px",
+                            borderRadius: 9,
                             display: "flex",
                             alignItems: "center",
                             justifyContent: "center",
                             flexShrink: 0,
-                            marginLeft: 8,
                           }}
                         >
                           {conv.unreadCount}
                         </span>
                       )}
                     </div>
-                    {(conv.tags ?? []).length > 0 && (
-                      <div style={{ display: "flex", gap: 3, marginTop: 3, flexWrap: "wrap" }}>
-                        {(conv.tags ?? []).slice(0, 3).map((tag) => (
-                          <span key={tag} style={{ fontSize: 9, padding: "1px 5px", background: "#df564120", color: "#df5641", borderRadius: 2 }}>{tag}</span>
-                        ))}
-                        {(conv.tags ?? []).length > 3 && <span style={{ fontSize: 9, color: "#555" }}>+{(conv.tags ?? []).length - 3}</span>}
-                      </div>
-                    )}
                   </div>
                 </button>
               );
@@ -1665,8 +1686,9 @@ export default function WhatsAppPage() {
                             style={{
                               padding: "10px 14px",
                               borderRadius: isOutbound ? "12px 0 12px 12px" : "0 12px 12px 12px",
-                              fontSize: 13,
-                              lineHeight: 1.5,
+                              fontSize: 14.5,
+                              lineHeight: 1.55,
+                              letterSpacing: 0.1,
                               ...(isOutbound
                                 ? isAIMsg
                                   ? { background: "#1e1e2e", border: "1px solid #2a2a4a", color: "#c8d0ff" }
@@ -1677,7 +1699,7 @@ export default function WhatsAppPage() {
                             {(msg.mediaType || msg.mediaUrl) && (
                               <MediaPreview mediaType={msg.mediaType ?? "document"} mediaUrl={msg.mediaUrl} />
                             )}
-                            <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{msg.body}</div>
+                            <div dir="auto" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{msg.body}</div>
                             <div
                               style={{
                                 display: "flex",

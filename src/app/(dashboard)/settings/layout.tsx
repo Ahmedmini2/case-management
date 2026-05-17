@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 
 const tabs = [
   { href: "/settings/general", label: "General" },
+  { href: "/settings/fonts", label: "Fonts" },
   { href: "/settings/team", label: "Team" },
   { href: "/settings/users", label: "Users" },
   { href: "/settings/pipelines", label: "Pipelines" },

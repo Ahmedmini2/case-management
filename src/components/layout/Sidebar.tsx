@@ -20,6 +20,7 @@ import {
   Radio,
   Settings,
   ShieldCheck,
+  Type,
   Users,
   Webhook,
   Zap,
@@ -47,6 +48,7 @@ const coreItems = [
 
 const settingsItems = [
   { href: "/settings/general", label: "General", icon: Settings },
+  { href: "/settings/fonts", label: "Fonts", icon: Type },
   { href: "/settings/users", label: "Users", icon: Users },
   { href: "/settings/team", label: "Team & Permissions", icon: ShieldCheck },
   { href: "/settings/pipelines", label: "Pipelines", icon: Map },
@@ -67,6 +69,7 @@ function NavItem({
   active,
   iconColor,
   collapsed,
+  badge,
 }: {
   href: string;
   label: string;
@@ -74,28 +77,44 @@ function NavItem({
   active: boolean;
   iconColor?: string;
   collapsed?: boolean;
+  badge?: number;
 }) {
+  const hasBadge = typeof badge === "number" && badge > 0;
   return (
     <Link
       href={href}
-      title={collapsed ? label : undefined}
+      title={collapsed ? `${label}${hasBadge ? ` (${badge} unread)` : ""}` : undefined}
       className={cn(
-        "group flex items-center gap-2.5 rounded-lg text-sm font-medium transition-all duration-150",
+        "group relative flex items-center gap-2.5 rounded-lg text-sm font-medium transition-all duration-150",
         collapsed ? "justify-center px-0 py-2" : "px-3 py-2",
         active
           ? "bg-sidebar-primary text-sidebar-primary-foreground shadow-sm shadow-black/20"
           : "text-sidebar-foreground/70 hover:bg-sidebar-accent hover:text-sidebar-foreground",
       )}
     >
-      <Icon
-        className={cn(
-          "h-4 w-4 shrink-0 transition-colors",
-          !iconColor && (active ? "text-sidebar-primary-foreground" : "text-sidebar-foreground/50 group-hover:text-sidebar-foreground"),
+      <span className="relative shrink-0">
+        <Icon
+          className={cn(
+            "h-4 w-4 transition-colors",
+            !iconColor && (active ? "text-sidebar-primary-foreground" : "text-sidebar-foreground/50 group-hover:text-sidebar-foreground"),
+          )}
+          style={iconColor ? { color: iconColor } : undefined}
+        />
+        {/* Badge shown beside the icon when sidebar is collapsed (no room for it on the right) */}
+        {hasBadge && collapsed && (
+          <span className="absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1 text-[9px] font-bold leading-none text-white">
+            {badge > 99 ? "99+" : badge}
+          </span>
         )}
-        style={iconColor ? { color: iconColor } : undefined}
-      />
+      </span>
       {!collapsed && <span className="truncate">{label}</span>}
-      {!collapsed && active && <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 opacity-70" />}
+      {/* Badge on the right when expanded (next to the label) */}
+      {hasBadge && !collapsed && (
+        <span className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-red-500 px-1.5 text-[10px] font-bold leading-none text-white">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
+      {!collapsed && active && !hasBadge && <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 opacity-70" />}
     </Link>
   );
 }
@@ -104,6 +123,7 @@ export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const [whatsappUnread, setWhatsappUnread] = useState(0);
 
   // Hydrate persisted state. SSR renders expanded; client may flip after mount.
   useEffect(() => {
@@ -121,6 +141,22 @@ export function Sidebar() {
       router.prefetch(item.href);
     }
   }, [router]);
+
+  // Poll the total unread-message count for the WhatsApp badge.
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      try {
+        const res = await fetch("/api/whatsapp/unread-count", { cache: "no-store" });
+        if (!res.ok) return;
+        const json = (await res.json()) as { data?: { total: number } | null };
+        if (!cancelled) setWhatsappUnread(json.data?.total ?? 0);
+      } catch { /* offline or signed out — leave the count as-is */ }
+    }
+    void load();
+    const id = setInterval(load, 15000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
 
   // (settings active state is computed inline where needed)
 
@@ -174,7 +210,8 @@ export function Sidebar() {
                 item.href === "/reports"
                   ? pathname === "/" || pathname === "/reports"
                   : pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} />;
+              const badge = item.href === "/whatsapp" ? whatsappUnread : undefined;
+              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} badge={badge} />;
             })}
           </div>
         </div>

@@ -6,7 +6,8 @@ import { toast } from "sonner";
 import {
   Send, Upload, Plus, Trash2, Play, CheckCircle2, XCircle, Clock,
   Loader2, FileSpreadsheet, Users, ArrowLeft, X, Phone, AlertCircle,
-  Radio, RefreshCw, FileText, Sparkles,
+  Radio, RefreshCw, FileText, Sparkles, Eye, Copy, ExternalLink, MoreVertical,
+  Search, Tag, Check, Save,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -105,6 +106,229 @@ function Badge({ status }: { status: string }) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  TEMPLATE PREVIEW CARD — WhatsApp-style bubble                      */
+/* ------------------------------------------------------------------ */
+
+function TemplatePreviewCard({
+  template,
+  values,
+  compact = false,
+}: {
+  template: Template;
+  values?: Record<string, string>;
+  compact?: boolean;
+}) {
+  // Substitute {{1}}, {{2}} ... with provided values (fallback to placeholder)
+  let bodyRendered = template.body;
+  if (values) {
+    for (const [key, val] of Object.entries(values)) {
+      bodyRendered = bodyRendered.replaceAll(`{{${key}}}`, val.trim() || `{{${key}}}`);
+    }
+  }
+
+  const headerType = template.headerType ?? "TEXT";
+  const mediaUrl = template.headerMediaUrl;
+
+  return (
+    <div
+      style={{
+        background: "#0b141a",
+        borderRadius: 8,
+        border: "1px solid #1f2c33",
+        padding: 8,
+        maxWidth: compact ? "100%" : 360,
+        fontFamily: 'system-ui, -apple-system, "Segoe UI", "Helvetica Neue", Arial, "Tahoma", "Noto Sans Arabic", sans-serif',
+      }}
+    >
+      {/* Bubble */}
+      <div
+        style={{
+          background: "#1f2c33",
+          borderRadius: 8,
+          padding: 4,
+          color: "#e9edef",
+          overflow: "hidden",
+        }}
+      >
+        {/* Header */}
+        {headerType === "IMAGE" && mediaUrl && (
+          <img
+            src={mediaUrl}
+            alt="Header"
+            style={{
+              display: "block",
+              width: "100%",
+              maxHeight: compact ? 140 : 220,
+              objectFit: "cover",
+              borderRadius: 6,
+              marginBottom: 4,
+              background: "#0b141a",
+            }}
+          />
+        )}
+        {headerType === "VIDEO" && mediaUrl && (
+          <video
+            src={mediaUrl}
+            controls
+            style={{
+              display: "block",
+              width: "100%",
+              maxHeight: compact ? 140 : 220,
+              borderRadius: 6,
+              marginBottom: 4,
+              background: "#0b141a",
+            }}
+          />
+        )}
+        {headerType === "DOCUMENT" && mediaUrl && (
+          <a
+            href={mediaUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 12px",
+              background: "#0b141a",
+              borderRadius: 6,
+              marginBottom: 4,
+              color: "#e9edef",
+              textDecoration: "none",
+              fontSize: 12,
+            }}
+          >
+            <FileText style={{ width: 18, height: 18, color: "#8696a0", flexShrink: 0 }} />
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Document attachment
+            </span>
+            <ExternalLink style={{ width: 12, height: 12, color: "#8696a0" }} />
+          </a>
+        )}
+        {headerType === "TEXT" && template.header && (
+          <div
+            dir="auto"
+            style={{
+              padding: "8px 10px 0 10px",
+              fontSize: 14,
+              fontWeight: 700,
+              color: "#fff",
+            }}
+          >
+            {template.header}
+          </div>
+        )}
+
+        {/* Body */}
+        <div
+          dir="auto"
+          style={{
+            padding: "6px 10px",
+            fontSize: 14,
+            lineHeight: 1.5,
+            color: "#e9edef",
+            whiteSpace: "pre-wrap",
+            wordBreak: "break-word",
+          }}
+        >
+          {bodyRendered}
+        </div>
+
+        {/* Footer */}
+        {template.footer && (
+          <div
+            dir="auto"
+            style={{
+              padding: "0 10px 6px 10px",
+              fontSize: 11,
+              color: "#8696a0",
+            }}
+          >
+            {template.footer}
+          </div>
+        )}
+
+        {/* Timestamp row (visual only) */}
+        <div
+          style={{
+            padding: "0 10px 6px 10px",
+            display: "flex",
+            justifyContent: "flex-end",
+            fontSize: 10,
+            color: "#8696a0",
+          }}
+        >
+          12:34
+        </div>
+      </div>
+
+      {/* Buttons — rendered below bubble in WhatsApp UI */}
+      {template.buttons && template.buttons.length > 0 && (
+        <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+          {template.buttons.map((b, i) => {
+            const icon =
+              b.type === "URL" ? <ExternalLink style={{ width: 13, height: 13 }} /> :
+              b.type === "PHONE_NUMBER" ? <Phone style={{ width: 13, height: 13 }} /> :
+              null;
+            const href =
+              b.type === "URL" ? (b as { url: string }).url :
+              b.type === "PHONE_NUMBER" ? `tel:${(b as { phone: string }).phone}` :
+              undefined;
+            const inner = (
+              <>
+                {icon}
+                <span>{b.text}</span>
+              </>
+            );
+            return href ? (
+              <a
+                key={i}
+                href={href}
+                target={b.type === "URL" ? "_blank" : undefined}
+                rel="noopener noreferrer"
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  background: "#1f2c33",
+                  color: "#53bdeb",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                  textDecoration: "none",
+                }}
+              >
+                {inner}
+              </a>
+            ) : (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 6,
+                  background: "#1f2c33",
+                  color: "#53bdeb",
+                  fontSize: 13,
+                  fontWeight: 500,
+                  padding: "8px 12px",
+                  borderRadius: 6,
+                }}
+              >
+                {inner}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  COMPONENT                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -132,6 +356,21 @@ export default function BroadcastPage() {
   // Schedule for create form
   const [formScheduledAt, setFormScheduledAt] = useState("");
 
+  // Template search (create flow)
+  const [templateSearch, setTemplateSearch] = useState("");
+
+  // Recipient picker mode in the create flow.
+  // "manual" = upload CSV / add by phone. "segment" = pick from saved tags.
+  const [recipientMode, setRecipientMode] = useState<"manual" | "segment">("manual");
+  type ContactTagSummary = { name: string; memberCount: number };
+  const [contactTags, setContactTags] = useState<ContactTagSummary[]>([]);
+  const [pickedSegmentTags, setPickedSegmentTags] = useState<string[]>([]);
+  const [loadingSegment, setLoadingSegment] = useState(false);
+
+  // Save-as-segment after building a recipient list
+  const [saveSegmentTag, setSaveSegmentTag] = useState("");
+  const [savingSegment, setSavingSegment] = useState(false);
+
   // Template create form
   const [tplName, setTplName] = useState("");
   const [tplCategory, setTplCategory] = useState("MARKETING");
@@ -148,6 +387,12 @@ export default function BroadcastPage() {
   const [tplCreating, setTplCreating] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [showTplForm, setShowTplForm] = useState(false);
+
+  // Template preview modal
+  const [previewTpl, setPreviewTpl] = useState<Template | null>(null);
+
+  // Open three-dots menu on a template card (by template id)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -171,7 +416,31 @@ export default function BroadcastPage() {
     } catch { /* silent */ }
   }, []);
 
+  const loadContactTags = useCallback(async () => {
+    try {
+      const res = await fetch("/api/contacts/tags");
+      const json = (await res.json()) as { data: { tags: ContactTagSummary[] } | null };
+      setContactTags(json.data?.tags ?? []);
+    } catch { /* silent */ }
+  }, []);
+
   useEffect(() => { void loadBroadcasts(); void loadTemplates(); }, [loadBroadcasts, loadTemplates]);
+
+  // Lazy-load tags when entering the create flow so the segment picker has data.
+  useEffect(() => {
+    if (view === "create") void loadContactTags();
+  }, [view, loadContactTags]);
+
+  // Close any open template three-dots menu on outside click
+  useEffect(() => {
+    if (!openMenuId) return;
+    function onDocClick(e: MouseEvent) {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest("[data-tpl-menu]")) setOpenMenuId(null);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [openMenuId]);
 
   // Poll while sending
   useEffect(() => {
@@ -294,6 +563,58 @@ export default function BroadcastPage() {
     await loadTemplates();
   }
 
+  function duplicateTemplate(t: Template) {
+    // Prefill the create form with the template's data so the user can submit
+    // a copy to Meta for fresh approval.
+    const baseName = t.name.replace(/_copy(_\d+)?$/, "");
+    const existingCopies = templates.filter((x) => x.name.startsWith(`${baseName}_copy`)).length;
+    const suggestedName = existingCopies === 0 ? `${baseName}_copy` : `${baseName}_copy_${existingCopies + 1}`;
+
+    setTplName(suggestedName);
+    setTplCategory(t.category);
+    setTplLang(t.language);
+    setTplBody(t.body);
+    setTplHeaderType((t.headerType ?? "TEXT") as HeaderType);
+    setTplHeader(t.header ?? "");
+    setTplHeaderMediaUrl(t.headerMediaUrl ?? "");
+    // Meta requires a fresh upload to get a new headerMediaHandle; the user
+    // must re-upload before submitting.
+    setTplHeaderMediaHandle("");
+    setTplFooter(t.footer ?? "");
+    setTplButtons(t.buttons ? t.buttons.map((b) => ({ ...b })) : []);
+    setShowTplForm(true);
+    setPreviewTpl(null);
+
+    // Scroll into view after the form mounts
+    setTimeout(() => {
+      const el = document.querySelector<HTMLInputElement>('input[placeholder="promotion_launch"]');
+      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      el?.focus();
+    }, 60);
+
+    if (t.headerType && t.headerType !== "TEXT") {
+      toast.info("Re-upload the header media before submitting — Meta requires a fresh upload handle.");
+    } else {
+      toast.success("Template duplicated — review and submit to Meta.");
+    }
+  }
+
+  function startBroadcastFromTemplate(t: Template) {
+    if (t.status !== "APPROVED") {
+      toast.error("Template must be approved by Meta before you can broadcast with it.");
+      return;
+    }
+    setSelectedTemplateId(t.id);
+    setTemplateVars({});
+    setFormName("");
+    setFormRecipients([]);
+    setFormScheduledAt("");
+    setOpenMenuId(null);
+    setPreviewTpl(null);
+    setView("create");
+    toast.success(`Broadcasting with template: ${t.name}`);
+  }
+
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return;
     const reader = new FileReader();
@@ -315,6 +636,73 @@ export default function BroadcastPage() {
     if (formRecipients.some((r) => r.phone === formatted)) { toast.error("Already added"); return; }
     setFormRecipients((prev) => [...prev, { phone: formatted, contactName: manualName.trim() || undefined }]);
     setManualPhone(""); setManualName("");
+  }
+
+  // Load every contact carrying `tagName` and merge them into the recipient
+  // list (deduped by phone). Already-picked tags are removed.
+  async function toggleSegmentTag(tagName: string) {
+    const tag = tagName.trim().toLowerCase();
+    if (!tag) return;
+    if (pickedSegmentTags.includes(tag)) {
+      // Just untrack the tag — we don't bulk-remove the contacts we may have added
+      // from it, since the user might want to keep some of them.
+      setPickedSegmentTags((prev) => prev.filter((t) => t !== tag));
+      return;
+    }
+    setLoadingSegment(true);
+    try {
+      const res = await fetch(`/api/contacts?tags=${encodeURIComponent(tag)}`);
+      const json = (await res.json()) as {
+        data: { phone: string | null; name: string }[] | null;
+      };
+      const rows = (json.data ?? []).filter((c) => c.phone && c.phone.trim().length > 5);
+      const newEntries = rows.map((c) => ({
+        phone: (c.phone as string).trim(),
+        contactName: c.name,
+      }));
+      const existing = new Set(formRecipients.map((r) => r.phone));
+      const added = newEntries.filter((r) => !existing.has(r.phone));
+      setFormRecipients((prev) => [...prev, ...added]);
+      setPickedSegmentTags((prev) => [...prev, tag]);
+      if (added.length === 0) {
+        toast.info(`All ${newEntries.length} contacts in "${tag}" were already in the list`);
+      } else {
+        toast.success(`Added ${added.length} recipients from segment "${tag}"`);
+      }
+    } catch {
+      toast.error("Failed to load segment");
+    }
+    setLoadingSegment(false);
+  }
+
+  async function saveCurrentAsSegment() {
+    const tag = saveSegmentTag.trim().toLowerCase().replace(/[^a-z0-9_\- ]+/g, "").replace(/\s+/g, "-");
+    if (!tag) { toast.error("Give the segment a name first"); return; }
+    if (formRecipients.length === 0) { toast.error("Add some recipients first"); return; }
+
+    setSavingSegment(true);
+    try {
+      const res = await fetch("/api/contacts/bulk", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entries: formRecipients.map((r) => ({ phone: r.phone, name: r.contactName })),
+          tags: [tag],
+        }),
+      });
+      const json = (await res.json()) as {
+        data: { created: number; updated: number } | null;
+        error: string | null;
+      };
+      if (!res.ok || !json.data) { toast.error(json.error ?? "Failed to save segment"); }
+      else {
+        const { created, updated } = json.data;
+        toast.success(`Saved segment "${tag}" (${created} new, ${updated} updated)`);
+        setSaveSegmentTag("");
+        await loadContactTags();
+      }
+    } catch { toast.error("Failed to save segment"); }
+    setSavingSegment(false);
   }
 
   async function handleCreate() {
@@ -376,14 +764,6 @@ export default function BroadcastPage() {
   const totalSent = broadcasts.reduce((s, b) => s + b.sentCount, 0);
   const totalFailed = broadcasts.reduce((s, b) => s + b.failedCount, 0);
   const approvedTemplates = templates.filter((t) => t.status === "APPROVED");
-
-  // Build message preview when template + vars change
-  let messagePreview = selectedTemplate?.body ?? "";
-  if (selectedTemplate) {
-    for (const [key, value] of Object.entries(templateVars)) {
-      messagePreview = messagePreview.replace(`{{${key}}}`, value || `[var ${key}]`);
-    }
-  }
 
   /* ================================================================ */
   return (
@@ -727,7 +1107,7 @@ export default function BroadcastPage() {
           </div>
         )}
 
-        {/* Template list */}
+        {/* Template grid */}
         {templates.length === 0 ? (
           <div className="flex flex-col items-center gap-3 py-16 text-center border rounded-xl bg-card">
             <FileText className="h-10 w-10 text-muted-foreground/20" />
@@ -735,39 +1115,97 @@ export default function BroadcastPage() {
             <p className="text-xs text-muted-foreground/60">Click &quot;Sync from Meta&quot; to import existing templates, or create a new one</p>
           </div>
         ) : (
-          <div className="space-y-2">
-            {templates.map((t) => (
-              <div key={t.id} className="flex items-center gap-4 rounded-xl border bg-card p-4">
-                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted">
-                  <FileText className="h-4 w-4 text-muted-foreground" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <span className="font-semibold text-sm font-mono">{t.name}</span>
-                    <Badge status={t.status} />
-                    <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{t.category}</span>
-                    <span className="text-[10px] text-muted-foreground">{t.language}</span>
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate">{t.body}</p>
-                  {t.variableCount > 0 && <p className="text-[10px] text-blue-400 mt-0.5">{t.variableCount} variable{t.variableCount !== 1 ? "s" : ""}</p>}
-                  {t.buttons && t.buttons.length > 0 && (
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {t.buttons.map((b, i) => (
-                        <span
-                          key={i}
-                          className="inline-flex items-center gap-1 rounded border bg-muted/40 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                        >
-                          {b.type === "QUICK_REPLY" ? "↩" : b.type === "URL" ? "🔗" : "📞"} {b.text}
-                        </span>
-                      ))}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {templates.map((t) => {
+              const canBroadcast = t.status === "APPROVED";
+              const menuOpen = openMenuId === t.id;
+              return (
+                <div
+                  key={t.id}
+                  className="group relative flex flex-col rounded-xl border bg-card overflow-hidden hover:border-primary/40 transition-colors"
+                >
+                  {/* Preview area — clickable to open full preview */}
+                  <button
+                    type="button"
+                    onClick={() => setPreviewTpl(t)}
+                    className="block w-full text-left cursor-pointer focus:outline-none"
+                    style={{
+                      background: "#0b141a",
+                      padding: 16,
+                    }}
+                    aria-label={`Preview ${t.name}`}
+                  >
+                    <div style={{ pointerEvents: "none" }}>
+                      <TemplatePreviewCard template={t} compact />
                     </div>
-                  )}
+                  </button>
+
+                  {/* Three-dots menu (top-right corner overlay) */}
+                  <div data-tpl-menu className="absolute top-2 right-2 z-10">
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setOpenMenuId(menuOpen ? null : t.id); }}
+                      className="flex h-7 w-7 items-center justify-center rounded-md bg-black/40 backdrop-blur text-white/90 hover:bg-black/60"
+                      title="Actions"
+                      aria-label="Template actions"
+                    >
+                      <MoreVertical className="h-3.5 w-3.5" />
+                    </button>
+                    {menuOpen && (
+                      <div
+                        className="absolute right-0 mt-1 w-48 rounded-md border bg-popover text-popover-foreground shadow-lg"
+                        style={{ zIndex: 20 }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => startBroadcastFromTemplate(t)}
+                          disabled={!canBroadcast}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
+                          title={canBroadcast ? "Create a broadcast using this template" : "Template must be approved before you can broadcast"}
+                        >
+                          <Send className="h-3.5 w-3.5 text-green-500" />
+                          <span>Send a broadcast</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setOpenMenuId(null); duplicateTemplate(t); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-muted"
+                        >
+                          <Copy className="h-3.5 w-3.5 text-blue-400" />
+                          <span>Duplicate</span>
+                        </button>
+                        <div className="h-px bg-border" />
+                        <button
+                          type="button"
+                          onClick={() => { setOpenMenuId(null); void deleteTemplate(t.id); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-xs hover:bg-red-500/10 text-red-400"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Footer: name + tags */}
+                  <div className="flex flex-col gap-2 p-3 border-t">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span className="font-mono text-xs font-semibold truncate flex-1" title={t.name}>{t.name}</span>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1">
+                      <Badge status={t.status} />
+                      <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded uppercase tracking-wide">{t.category}</span>
+                      <span className="text-[10px] text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded uppercase">{t.language}</span>
+                      {t.variableCount > 0 && (
+                        <span className="text-[10px] text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                          {t.variableCount} var{t.variableCount !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <button onClick={() => void deleteTemplate(t.id)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10">
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </>)}
@@ -796,37 +1234,123 @@ export default function BroadcastPage() {
               <input value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. New Collection Launch" className="w-full rounded-lg border bg-background px-4 py-2.5 text-sm outline-none focus:border-primary" />
             </div>
 
-            {/* Template selection */}
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Message Template</label>
+            {/* Template selection — preview-style grid with search */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                  Message Template
+                  {selectedTemplate && (
+                    <span className="ml-2 text-[11px] normal-case text-primary">
+                      · {selectedTemplate.name}
+                    </span>
+                  )}
+                </label>
+                {selectedTemplate && (
+                  <button
+                    type="button"
+                    onClick={() => { setSelectedTemplateId(""); setTemplateVars({}); }}
+                    className="text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+
               {approvedTemplates.length === 0 ? (
                 <div className="rounded-lg border border-dashed p-4 text-center">
                   <p className="text-sm text-muted-foreground mb-2">No approved templates available</p>
                   <button onClick={() => setView("templates")} className="text-xs text-primary hover:underline">Go to Templates →</button>
                 </div>
               ) : (
-                <div className="space-y-2">
-                  {approvedTemplates.map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => {
-                        setSelectedTemplateId(t.id);
-                        setTemplateVars({});
-                      }}
-                      className={`w-full text-left rounded-lg border p-3 transition-colors ${
-                        selectedTemplateId === t.id ? "border-primary bg-primary/5" : "hover:border-muted-foreground/30"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2 mb-1">
-                        <Sparkles className="h-3.5 w-3.5 text-green-500" />
-                        <span className="font-medium text-sm font-mono">{t.name}</span>
-                        <Badge status={t.status} />
-                        {t.variableCount > 0 && <span className="text-[10px] text-blue-400">{t.variableCount} vars</span>}
+                <>
+                  {/* Search */}
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
+                    <input
+                      type="text"
+                      value={templateSearch}
+                      onChange={(e) => setTemplateSearch(e.target.value)}
+                      placeholder="Search templates by name or message body..."
+                      className="w-full rounded-lg border bg-background pl-9 pr-3 py-2 text-sm outline-none focus:border-primary"
+                    />
+                    {templateSearch && (
+                      <button
+                        type="button"
+                        onClick={() => setTemplateSearch("")}
+                        className="absolute right-2 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-muted"
+                        aria-label="Clear search"
+                      >
+                        <X className="h-3.5 w-3.5" />
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Filtered preview grid */}
+                  {(() => {
+                    const q = templateSearch.trim().toLowerCase();
+                    const filteredApproved = q
+                      ? approvedTemplates.filter((t) =>
+                          t.name.toLowerCase().includes(q) ||
+                          t.body.toLowerCase().includes(q) ||
+                          (t.header ?? "").toLowerCase().includes(q) ||
+                          (t.footer ?? "").toLowerCase().includes(q),
+                        )
+                      : approvedTemplates;
+
+                    if (filteredApproved.length === 0) {
+                      return (
+                        <div className="rounded-lg border border-dashed p-4 text-center">
+                          <p className="text-xs text-muted-foreground">No templates match &quot;{templateSearch}&quot;</p>
+                        </div>
+                      );
+                    }
+
+                    return (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        {filteredApproved.map((t) => {
+                          const selected = selectedTemplateId === t.id;
+                          return (
+                            <button
+                              key={t.id}
+                              type="button"
+                              onClick={() => { setSelectedTemplateId(t.id); setTemplateVars({}); }}
+                              className={`relative flex flex-col rounded-xl border overflow-hidden transition-all text-left ${
+                                selected
+                                  ? "border-primary ring-2 ring-primary/30 bg-primary/5"
+                                  : "bg-card hover:border-primary/40"
+                              }`}
+                              aria-pressed={selected}
+                            >
+                              {selected && (
+                                <div className="absolute top-2 right-2 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground shadow">
+                                  <Check className="h-3.5 w-3.5" />
+                                </div>
+                              )}
+                              {/* Preview */}
+                              <div style={{ background: "#0b141a", padding: 12, pointerEvents: "none" }}>
+                                <TemplatePreviewCard template={t} compact />
+                              </div>
+                              {/* Footer strip */}
+                              <div className="flex flex-col gap-1.5 p-2.5 border-t">
+                                <span className="font-mono text-[11px] font-semibold truncate" title={t.name}>{t.name}</span>
+                                <div className="flex flex-wrap items-center gap-1">
+                                  <Badge status={t.status} />
+                                  <span className="text-[9px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded uppercase">{t.category}</span>
+                                  <span className="text-[9px] text-muted-foreground bg-muted/60 px-1.5 py-0.5 rounded uppercase">{t.language}</span>
+                                  {t.variableCount > 0 && (
+                                    <span className="text-[9px] text-blue-400 bg-blue-500/10 px-1.5 py-0.5 rounded">
+                                      {t.variableCount} var{t.variableCount !== 1 ? "s" : ""}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
                       </div>
-                      <p className="text-xs text-muted-foreground">{t.body}</p>
-                    </button>
-                  ))}
-                </div>
+                    );
+                  })()}
+                </>
               )}
             </div>
 
@@ -850,29 +1374,143 @@ export default function BroadcastPage() {
               </div>
             )}
 
-            {/* Message preview */}
+            {/* Message preview — full WhatsApp-style with media, header, footer, buttons */}
             {selectedTemplate && (
-              <div className="rounded-lg border bg-muted/30 p-4 space-y-1">
+              <div className="space-y-2">
                 <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Message Preview</p>
-                {selectedTemplate.header && <p className="text-sm font-semibold">{selectedTemplate.header}</p>}
-                <p className="text-sm whitespace-pre-wrap">{messagePreview}</p>
-                {selectedTemplate.footer && <p className="text-[11px] text-muted-foreground mt-2">{selectedTemplate.footer}</p>}
+                <div className="rounded-lg border p-4" style={{ background: "#0b141a" }}>
+                  <TemplatePreviewCard template={selectedTemplate} values={templateVars} compact />
+                </div>
               </div>
             )}
 
-            {/* Upload recipients */}
+            {/* Recipients */}
             <div className="space-y-3">
-              <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recipients</label>
-              <div className="flex gap-2">
-                <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 rounded-lg border bg-background px-4 py-2.5 text-sm font-medium hover:bg-muted">
-                  <Upload className="h-4 w-4" /> Upload CSV
-                </button>
-                <input ref={fileRef} type="file" accept=".csv,.txt,.tsv" onChange={handleFileUpload} className="hidden" />
-                <input value={manualPhone} onChange={(e) => setManualPhone(e.target.value)} placeholder="+971501234567" className="flex-1 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
-                <input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Name" className="w-32 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
-                <button onClick={addManual} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/80"><Plus className="h-4 w-4" /></button>
+              <div className="flex items-center justify-between">
+                <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recipients</label>
+                {/* Mode toggle */}
+                <div className="inline-flex rounded-lg border bg-background p-0.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setRecipientMode("manual")}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 transition-colors ${
+                      recipientMode === "manual"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    <Upload className="h-3 w-3" /> Upload / Manual
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRecipientMode("segment")}
+                    className={`flex items-center gap-1.5 rounded-md px-3 py-1 transition-colors ${
+                      recipientMode === "segment"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:bg-muted"
+                    }`}
+                  >
+                    <Tag className="h-3 w-3" /> From segment
+                  </button>
+                </div>
               </div>
-              <p className="text-[10px] text-muted-foreground/50">CSV: one number per line, or phone,name columns</p>
+
+              {recipientMode === "manual" && (
+                <>
+                  <div className="flex gap-2">
+                    <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 rounded-lg border bg-background px-4 py-2.5 text-sm font-medium hover:bg-muted">
+                      <Upload className="h-4 w-4" /> Upload CSV
+                    </button>
+                    <input ref={fileRef} type="file" accept=".csv,.txt,.tsv" onChange={handleFileUpload} className="hidden" />
+                    <input value={manualPhone} onChange={(e) => setManualPhone(e.target.value)} placeholder="+971501234567" className="flex-1 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+                    <input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Name" className="w-32 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+                    <button onClick={addManual} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/80"><Plus className="h-4 w-4" /></button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/50">CSV: one number per line, or phone,name columns</p>
+                </>
+              )}
+
+              {recipientMode === "segment" && (
+                <div className="space-y-2">
+                  {contactTags.length === 0 ? (
+                    <div className="rounded-lg border border-dashed p-4 text-center space-y-2">
+                      <Tag className="h-6 w-6 text-muted-foreground/30 mx-auto" />
+                      <p className="text-xs text-muted-foreground">
+                        No saved segments yet. Upload a CSV in &quot;Upload / Manual&quot;, then save it as a segment below.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-lg border bg-background overflow-hidden">
+                      <div className="max-h-64 overflow-y-auto divide-y">
+                        {contactTags.map((tag) => {
+                          const picked = pickedSegmentTags.includes(tag.name);
+                          return (
+                            <button
+                              key={tag.name}
+                              type="button"
+                              onClick={() => void toggleSegmentTag(tag.name)}
+                              disabled={loadingSegment}
+                              className={`flex w-full items-center justify-between gap-3 px-3 py-2 text-left transition-colors disabled:opacity-60 ${
+                                picked ? "bg-primary/5" : "hover:bg-muted"
+                              }`}
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <div
+                                  className={`flex h-5 w-5 items-center justify-center rounded ${
+                                    picked ? "bg-primary text-primary-foreground" : "border bg-background"
+                                  }`}
+                                >
+                                  {picked && <Check className="h-3 w-3" />}
+                                </div>
+                                <span className="text-sm font-medium truncate">{tag.name}</span>
+                              </div>
+                              <span className="text-[10px] text-muted-foreground shrink-0">
+                                {tag.memberCount} contact{tag.memberCount !== 1 ? "s" : ""}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                  <p className="text-[10px] text-muted-foreground/60">
+                    Each tag is a segment. Picking a segment adds its contacts to the recipient list (deduped).
+                  </p>
+                </div>
+              )}
+
+              {/* Save current recipients as a new segment */}
+              {formRecipients.length > 0 && (
+                <div className="rounded-lg border border-dashed bg-muted/20 p-3 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Save className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                      Save current {formRecipients.length} recipients as a segment
+                    </span>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      value={saveSegmentTag}
+                      onChange={(e) => setSaveSegmentTag(e.target.value)}
+                      placeholder="e.g. purchased, vip, newsletter"
+                      className="flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                      onKeyDown={(e) => { if (e.key === "Enter") void saveCurrentAsSegment(); }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void saveCurrentAsSegment()}
+                      disabled={savingSegment || !saveSegmentTag.trim()}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-medium hover:bg-primary/80 disabled:opacity-50"
+                    >
+                      {savingSegment ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                      Save segment
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-muted-foreground/60">
+                    Creates contact records for any new phone numbers and tags them with the segment name.
+                  </p>
+                </div>
+              )}
             </div>
 
             {/* Schedule (optional) */}
@@ -1055,6 +1693,131 @@ export default function BroadcastPage() {
           </div>
         </>)}
       </>)}
+
+      {/* ========== TEMPLATE PREVIEW MODAL ========== */}
+      {previewTpl && (
+        <div
+          onClick={() => setPreviewTpl(null)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0, 0, 0, 0.7)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 100,
+            padding: 16,
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: "var(--card, #1a1a1a)",
+              border: "1px solid var(--border, #2a2a2a)",
+              borderRadius: 12,
+              width: "100%",
+              maxWidth: 480,
+              maxHeight: "calc(100vh - 32px)",
+              display: "flex",
+              flexDirection: "column",
+              overflow: "hidden",
+            }}
+          >
+            {/* Modal header */}
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                padding: "14px 18px",
+                borderBottom: "1px solid var(--border, #2a2a2a)",
+                flexShrink: 0,
+              }}
+            >
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 13,
+                      fontWeight: 600,
+                      color: "var(--foreground, #fff)",
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {previewTpl.name}
+                  </span>
+                  <Badge status={previewTpl.status} />
+                </div>
+                <div style={{ fontSize: 11, color: "var(--muted-foreground, #888)" }}>
+                  {previewTpl.category} · {previewTpl.language}
+                  {previewTpl.variableCount > 0 ? ` · ${previewTpl.variableCount} variable${previewTpl.variableCount === 1 ? "" : "s"}` : ""}
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, marginLeft: 12 }}>
+                {previewTpl.status === "APPROVED" && (
+                  <button
+                    onClick={() => startBroadcastFromTemplate(previewTpl)}
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium hover:bg-primary/80"
+                    title="Create a broadcast using this template"
+                  >
+                    <Send className="h-3.5 w-3.5" /> Broadcast
+                  </button>
+                )}
+                <button
+                  onClick={() => duplicateTemplate(previewTpl)}
+                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                  title="Duplicate this template"
+                >
+                  <Copy className="h-3.5 w-3.5" /> Duplicate
+                </button>
+                <button
+                  onClick={() => setPreviewTpl(null)}
+                  className="flex h-8 w-8 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+                  aria-label="Close preview"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+
+            {/* Scrollable WhatsApp-style preview */}
+            <div
+              style={{
+                flex: 1,
+                overflowY: "auto",
+                background: "#0b141a",
+                padding: 24,
+                display: "flex",
+                justifyContent: "center",
+              }}
+            >
+              <TemplatePreviewCard template={previewTpl} compact />
+            </div>
+
+            {/* Footer info */}
+            <div
+              style={{
+                padding: "10px 18px",
+                borderTop: "1px solid var(--border, #2a2a2a)",
+                fontSize: 11,
+                color: "var(--muted-foreground, #888)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexShrink: 0,
+              }}
+            >
+              <span>Created {format(new Date(previewTpl.createdAt), "d MMM yyyy")}</span>
+              {previewTpl.headerType && previewTpl.headerType !== "TEXT" && (
+                <span style={{ textTransform: "lowercase" }}>{previewTpl.headerType} header</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
