@@ -38,8 +38,8 @@ async function dispatch(request: Request) {
   const sb = supabaseAdmin();
   const nowIso = new Date().toISOString();
 
-  // Find due, still-scheduled broadcasts
-  const { data: dueRaw, error } = await sb
+  // 1) Find due scheduled broadcasts.
+  const { data: scheduledRaw, error: schedErr } = await sb
     .from("broadcasts")
     .select("id")
     .eq("status", "SCHEDULED")
@@ -47,39 +47,66 @@ async function dispatch(request: Request) {
     .lte("scheduledAt", nowIso)
     .limit(20);
 
-  if (error) {
-    console.error("[cron/dispatch-broadcasts] lookup failed:", error.message);
-    return { triggered: 0, errors: [error.message] };
+  if (schedErr) {
+    console.error("[cron/dispatch-broadcasts] scheduled lookup failed:", schedErr.message);
+    return { triggered: 0, resumed: 0, errors: [schedErr.message] };
   }
 
-  const due = (dueRaw ?? []) as { id: string }[];
-  if (due.length === 0) return { triggered: 0, errors: [] };
+  // 2) Find in-progress broadcasts that still have PENDING recipients. These are
+  //    the ones we need to keep feeding chunks to — every cron tick processes
+  //    another ~150 recipients per broadcast.
+  const { data: sendingRaw, error: sendErr } = await sb
+    .from("broadcasts")
+    .select("id")
+    .eq("status", "SENDING")
+    .limit(20);
+
+  if (sendErr) {
+    console.error("[cron/dispatch-broadcasts] sending lookup failed:", sendErr.message);
+  }
+
+  const scheduled = (scheduledRaw ?? []) as { id: string }[];
+  const sending = (sendingRaw ?? []) as { id: string }[];
+
+  // Filter SENDING broadcasts to only those with PENDING recipients left.
+  const sendingWithPending: { id: string }[] = [];
+  for (const b of sending) {
+    const { count } = await sb
+      .from("broadcast_recipients")
+      .select("id", { count: "exact", head: true })
+      .eq("broadcastId", b.id)
+      .eq("status", "PENDING");
+    if ((count ?? 0) > 0) sendingWithPending.push(b);
+  }
 
   const baseUrl = resolveBaseUrl(request);
   const cronSecret = process.env.CRON_SECRET ?? "";
 
   const errors: string[] = [];
   let triggered = 0;
+  let resumed = 0;
 
-  for (const b of due) {
-    try {
-      // Hit the existing send endpoint with the cron secret so it bypasses session auth.
-      // The send endpoint itself flips status SCHEDULED → SENDING and prevents double-fires.
-      void fetch(`${baseUrl}/api/whatsapp/broadcasts/${b.id}/send`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-cron-secret": cronSecret,
-        },
-      }).catch((e) => console.error(`[cron] send fetch failed for ${b.id}:`, e));
-
-      triggered++;
-    } catch (err) {
-      errors.push(`${b.id}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  // Helper that fires the send endpoint without awaiting. We don't await because
+  // /send takes up to 60 seconds per call and we want this cron handler to
+  // return quickly — the send route is now self-contained per chunk.
+  function kick(id: string): void {
+    void fetch(`${baseUrl}/api/whatsapp/broadcasts/${id}/send`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-cron-secret": cronSecret },
+    }).catch((e) => console.error(`[cron] send fetch failed for ${id}:`, e));
   }
 
-  return { triggered, errors };
+  for (const b of scheduled) {
+    try { kick(b.id); triggered++; }
+    catch (err) { errors.push(`${b.id}: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+
+  for (const b of sendingWithPending) {
+    try { kick(b.id); resumed++; }
+    catch (err) { errors.push(`${b.id}: ${err instanceof Error ? err.message : String(err)}`); }
+  }
+
+  return { triggered, resumed, errors };
 }
 
 export async function GET(request: Request) {
