@@ -7,7 +7,7 @@ import {
   Send, Upload, Plus, Trash2, Play, CheckCircle2, XCircle, Clock,
   Loader2, FileSpreadsheet, Users, ArrowLeft, X, Phone, AlertCircle,
   Radio, RefreshCw, FileText, Sparkles, Eye, Copy, ExternalLink, MoreVertical,
-  Search, Tag, Check, Save,
+  Search, Tag, Check, Save, Square, RotateCw,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ */
@@ -74,6 +74,7 @@ function statusCfg(s: string) {
   switch (s) {
     case "DRAFT": return { label: "Draft", color: "#888", bg: "#88888815" };
     case "SENDING": return { label: "Sending", color: "#f59e0b", bg: "#f59e0b15" };
+    case "STOPPED": return { label: "Stopped", color: "#a855f7", bg: "#a855f715" };
     case "COMPLETED": return { label: "Completed", color: "#10b981", bg: "#10b98115" };
     case "FAILED": return { label: "Failed", color: "#ef4444", bg: "#ef444415" };
     case "APPROVED": return { label: "Approved", color: "#10b981", bg: "#10b98115" };
@@ -761,6 +762,54 @@ export default function BroadcastPage() {
     await loadBroadcasts();
   }
 
+  // Track which broadcast is currently being stopped/resumed so we can disable
+  // the relevant button + show a spinner. Plain string state is fine because
+  // only one of these operations happens at a time per broadcast.
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
+  const [resumingId, setResumingId] = useState<string | null>(null);
+
+  async function handleStop(id: string) {
+    if (!window.confirm("Stop this broadcast? In-flight messages may still complete, but no new messages will be sent. You can resume later.")) return;
+    setStoppingId(id);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcasts/${id}/stop`, { method: "POST" });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "Failed to stop");
+      } else {
+        toast.success("Broadcast stopped");
+      }
+      await loadBroadcasts();
+      if (view === "detail" && activeBroadcast?.id === id) {
+        // Refresh the detail view so the Stop → Resume buttons swap correctly.
+        const detailRes = await fetch(`/api/whatsapp/broadcasts/${id}`);
+        const detailJson = (await detailRes.json()) as { data: (Broadcast & { recipients: Recipient[] }) | null };
+        if (detailJson.data) setActiveBroadcast(detailJson.data);
+      }
+    } catch { toast.error("Failed to stop"); }
+    setStoppingId(null);
+  }
+
+  async function handleResume(id: string) {
+    setResumingId(id);
+    try {
+      const res = await fetch(`/api/whatsapp/broadcasts/${id}/resume`, { method: "POST" });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) {
+        toast.error(json.error ?? "Failed to resume");
+      } else {
+        toast.success("Broadcast resumed");
+      }
+      await loadBroadcasts();
+      if (view === "detail" && activeBroadcast?.id === id) {
+        const detailRes = await fetch(`/api/whatsapp/broadcasts/${id}`);
+        const detailJson = (await detailRes.json()) as { data: (Broadcast & { recipients: Recipient[] }) | null };
+        if (detailJson.data) setActiveBroadcast(detailJson.data);
+      }
+    } catch { toast.error("Failed to resume"); }
+    setResumingId(null);
+  }
+
   const totalSent = broadcasts.reduce((s, b) => s + b.sentCount, 0);
   const totalFailed = broadcasts.reduce((s, b) => s + b.failedCount, 0);
   const approvedTemplates = templates.filter((t) => t.status === "APPROVED");
@@ -852,6 +901,16 @@ export default function BroadcastPage() {
                     {b.status === "DRAFT" && (
                       <button onClick={() => void handleSend(b.id)} disabled={sendingId === b.id} className="flex h-8 w-8 items-center justify-center rounded-lg text-green-500 hover:bg-green-500/10" title="Send">
                         {sendingId === b.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                      </button>
+                    )}
+                    {b.status === "SENDING" && (
+                      <button onClick={() => void handleStop(b.id)} disabled={stoppingId === b.id} className="flex h-8 w-8 items-center justify-center rounded-lg text-amber-500 hover:bg-amber-500/10" title="Stop broadcast">
+                        {stoppingId === b.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                      </button>
+                    )}
+                    {(b.status === "STOPPED" || b.status === "FAILED") && (
+                      <button onClick={() => void handleResume(b.id)} disabled={resumingId === b.id} className="flex h-8 w-8 items-center justify-center rounded-lg text-green-500 hover:bg-green-500/10" title="Resume broadcast">
+                        {resumingId === b.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
                       </button>
                     )}
                     {b.status !== "SENDING" && (
@@ -1595,6 +1654,26 @@ export default function BroadcastPage() {
               {activeBroadcast.status === "DRAFT" && (
                 <button onClick={() => void handleSend(activeBroadcast.id)} disabled={sendingId === activeBroadcast.id} className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700">
                   {sendingId === activeBroadcast.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Send Now
+                </button>
+              )}
+              {activeBroadcast.status === "SENDING" && (
+                <button
+                  onClick={() => void handleStop(activeBroadcast.id)}
+                  disabled={stoppingId === activeBroadcast.id}
+                  className="inline-flex items-center gap-2 rounded-lg bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {stoppingId === activeBroadcast.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Square className="h-4 w-4" />}
+                  Stop Broadcast
+                </button>
+              )}
+              {(activeBroadcast.status === "STOPPED" || activeBroadcast.status === "FAILED") && (
+                <button
+                  onClick={() => void handleResume(activeBroadcast.id)}
+                  disabled={resumingId === activeBroadcast.id}
+                  className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700 disabled:opacity-50"
+                >
+                  {resumingId === activeBroadcast.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCw className="h-4 w-4" />}
+                  Resume Broadcast
                 </button>
               )}
               {activeBroadcast.status !== "SENDING" && (

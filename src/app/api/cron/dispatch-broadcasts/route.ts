@@ -1,119 +1,125 @@
 import { NextResponse } from "next/server";
 import { fail, ok } from "@/lib/api";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { processBroadcastChunk } from "@/lib/whatsapp/process-broadcast-chunk";
 
-// Vercel Cron pings this endpoint every minute. It picks up any broadcast whose
-// scheduledAt has passed and is still SCHEDULED, then triggers the existing send route.
+// Vercel Cron pings this endpoint every minute. It (a) starts any due
+// SCHEDULED broadcasts and (b) keeps draining chunks of any SENDING broadcast
+// that still has PENDING recipients.
 //
-// Vercel signs cron requests with the CRON_SECRET env var via `Authorization: Bearer <secret>`.
-// In dev, also accept ?secret=... query for manual triggering.
+// CRITICAL: We process chunks INSIDE this invocation by directly awaiting the
+// chunk processor — no HTTP fetch to /send. Earlier versions used
+// `void fetch(...)` which Vercel kills along with this function. That's why
+// only 5/21000 messages were going out.
+export const maxDuration = 60;
+
+// How much of this invocation's 60s budget we'll actually spend on sending.
+// One chunk takes up to ~55s, so we only have time for ONE chunk per tick.
+const CRON_BUDGET_MS = 58 * 1000;
 
 function isAuthorized(request: Request): boolean {
   const secret = process.env.CRON_SECRET;
-  // If no secret is configured, allow (dev convenience). Set CRON_SECRET in production.
   if (!secret) return true;
-
   const authHeader = request.headers.get("authorization");
   if (authHeader === `Bearer ${secret}`) return true;
-
   const url = new URL(request.url);
   if (url.searchParams.get("secret") === secret) return true;
-
   return false;
 }
 
-function resolveBaseUrl(request: Request): string {
-  // Prefer explicit config; fall back to the request's own host (works on Vercel without env);
-  // use VERCEL_URL as a last resort for non-custom-domain deployments.
-  if (process.env.NEXT_PUBLIC_APP_URL) return process.env.NEXT_PUBLIC_APP_URL.replace(/\/$/, "");
-  try {
-    const u = new URL(request.url);
-    if (u.host && u.host !== "localhost:3000") return `${u.protocol}//${u.host}`;
-  } catch { /* ignore */ }
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:3000";
-}
-
-async function dispatch(request: Request) {
+async function dispatch(): Promise<{
+  triggered: number;
+  resumed: number;
+  results: Array<{ id: string; ok: boolean; reason?: string; sent?: number; failed?: number; pending?: number; done?: boolean }>;
+  errors: string[];
+}> {
+  const start = Date.now();
   const sb = supabaseAdmin();
   const nowIso = new Date().toISOString();
 
-  // 1) Find due scheduled broadcasts.
+  // 1) Due scheduled broadcasts (oldest first).
   const { data: scheduledRaw, error: schedErr } = await sb
     .from("broadcasts")
-    .select("id")
+    .select("id, scheduledAt")
     .eq("status", "SCHEDULED")
     .not("scheduledAt", "is", null)
     .lte("scheduledAt", nowIso)
+    .order("scheduledAt", { ascending: true })
     .limit(20);
 
   if (schedErr) {
-    console.error("[cron/dispatch-broadcasts] scheduled lookup failed:", schedErr.message);
-    return { triggered: 0, resumed: 0, errors: [schedErr.message] };
+    console.error("[cron] scheduled lookup failed:", schedErr.message);
+    return { triggered: 0, resumed: 0, results: [], errors: [schedErr.message] };
   }
 
-  // 2) Find in-progress broadcasts that still have PENDING recipients. These are
-  //    the ones we need to keep feeding chunks to — every cron tick processes
-  //    another ~150 recipients per broadcast.
+  // 2) In-progress broadcasts (resume the oldest first so big ones finish).
   const { data: sendingRaw, error: sendErr } = await sb
     .from("broadcasts")
-    .select("id")
+    .select("id, startedAt")
     .eq("status", "SENDING")
+    .order("startedAt", { ascending: true })
     .limit(20);
 
   if (sendErr) {
-    console.error("[cron/dispatch-broadcasts] sending lookup failed:", sendErr.message);
+    console.error("[cron] sending lookup failed:", sendErr.message);
   }
 
-  const scheduled = (scheduledRaw ?? []) as { id: string }[];
-  const sending = (sendingRaw ?? []) as { id: string }[];
+  const candidates: { id: string; kind: "scheduled" | "sending" }[] = [
+    ...((scheduledRaw ?? []) as { id: string }[]).map((b) => ({ id: b.id, kind: "scheduled" as const })),
+    ...((sendingRaw ?? []) as { id: string }[]).map((b) => ({ id: b.id, kind: "sending" as const })),
+  ];
 
-  // Filter SENDING broadcasts to only those with PENDING recipients left.
-  const sendingWithPending: { id: string }[] = [];
-  for (const b of sending) {
-    const { count } = await sb
-      .from("broadcast_recipients")
-      .select("id", { count: "exact", head: true })
-      .eq("broadcastId", b.id)
-      .eq("status", "PENDING");
-    if ((count ?? 0) > 0) sendingWithPending.push(b);
+  if (candidates.length === 0) {
+    return { triggered: 0, resumed: 0, results: [], errors: [] };
   }
 
-  const baseUrl = resolveBaseUrl(request);
-  const cronSecret = process.env.CRON_SECRET ?? "";
-
-  const errors: string[] = [];
   let triggered = 0;
   let resumed = 0;
+  const errors: string[] = [];
+  const results: Array<{ id: string; ok: boolean; reason?: string; sent?: number; failed?: number; pending?: number; done?: boolean }> = [];
 
-  // Helper that fires the send endpoint without awaiting. We don't await because
-  // /send takes up to 60 seconds per call and we want this cron handler to
-  // return quickly — the send route is now self-contained per chunk.
-  function kick(id: string): void {
-    void fetch(`${baseUrl}/api/whatsapp/broadcasts/${id}/send`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-cron-secret": cronSecret },
-    }).catch((e) => console.error(`[cron] send fetch failed for ${id}:`, e));
+  // Process candidates sequentially within our time budget. With CHUNK_SIZE=150
+  // and ~300-400ms per message, one chunk uses essentially the whole budget,
+  // so we typically only get to the first broadcast per tick. That's fine —
+  // the cron fires again in 60s and continues.
+  for (const c of candidates) {
+    if (Date.now() - start > CRON_BUDGET_MS - 5000) {
+      // Out of time. Remaining candidates picked up next tick.
+      break;
+    }
+
+    try {
+      const result = await processBroadcastChunk(c.id);
+      if (result.ok) {
+        if (c.kind === "scheduled") triggered++;
+        else resumed++;
+        results.push({
+          id: c.id,
+          ok: true,
+          sent: result.chunkSent,
+          failed: result.chunkFailed,
+          pending: result.pendingCount,
+          done: result.done,
+        });
+      } else {
+        results.push({ id: c.id, ok: false, reason: result.reason });
+        if (!result.skipped) errors.push(`${c.id}: ${result.reason}`);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      errors.push(`${c.id}: ${msg}`);
+      results.push({ id: c.id, ok: false, reason: msg });
+    }
   }
 
-  for (const b of scheduled) {
-    try { kick(b.id); triggered++; }
-    catch (err) { errors.push(`${b.id}: ${err instanceof Error ? err.message : String(err)}`); }
-  }
-
-  for (const b of sendingWithPending) {
-    try { kick(b.id); resumed++; }
-    catch (err) { errors.push(`${b.id}: ${err instanceof Error ? err.message : String(err)}`); }
-  }
-
-  return { triggered, resumed, errors };
+  return { triggered, resumed, results, errors };
 }
 
 export async function GET(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
-  const result = await dispatch(request);
+  const result = await dispatch();
   return NextResponse.json(ok(result));
 }
 
@@ -121,6 +127,6 @@ export async function POST(request: Request) {
   if (!isAuthorized(request)) {
     return NextResponse.json(fail("Unauthorized"), { status: 401 });
   }
-  const result = await dispatch(request);
+  const result = await dispatch();
   return NextResponse.json(ok(result));
 }
