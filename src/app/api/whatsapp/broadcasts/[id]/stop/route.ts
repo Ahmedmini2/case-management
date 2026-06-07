@@ -40,11 +40,12 @@ export async function POST(_: Request, { params }: { params: Promise<{ id: strin
     .eq("id", id);
   if (updErr) return NextResponse.json(fail(updErr.message), { status: 500 });
 
-  // Return any claimed-but-not-yet-sent recipients to PENDING so the user can
-  // resume from where we left off without losing them.
+  // Return any claimed-but-not-yet-sent recipients to PENDING (clearing the
+  // claim stamp) so the user can resume from where we left off without losing
+  // them.
   const { error: rstErr } = await sb
     .from("broadcast_recipients")
-    .update({ status: "PENDING" })
+    .update({ status: "PENDING", claimedAt: null })
     .eq("broadcastId", id)
     .eq("status", "SENDING");
 

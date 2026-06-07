@@ -89,8 +89,11 @@ async function dispatch(): Promise<{
     }
 
     try {
-      const result = await processBroadcastChunk(c.id);
-      if (result.ok) {
+      const result = await processBroadcastChunk(c.id, { source: "cron" });
+      if (result.skipped) {
+        // Deferred (a client driver is active) or stopped — informational.
+        results.push({ id: c.id, ok: true, reason: result.reason, pending: result.pendingCount });
+      } else if (result.ok) {
         if (c.kind === "scheduled") triggered++;
         else resumed++;
         results.push({
@@ -102,8 +105,9 @@ async function dispatch(): Promise<{
           done: result.done,
         });
       } else {
+        // Config error (no template, not approved, missing creds).
         results.push({ id: c.id, ok: false, reason: result.reason });
-        if (!result.skipped) errors.push(`${c.id}: ${result.reason}`);
+        errors.push(`${c.id}: ${result.reason}`);
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

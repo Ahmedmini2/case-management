@@ -3,12 +3,11 @@ import { ok, fail } from "@/lib/api";
 import { auth } from "@/lib/auth";
 import { processBroadcastChunk } from "@/lib/whatsapp/process-broadcast-chunk";
 
-// Use the full Pro/Enterprise window. One chunk per invocation; the cron
-// re-fires the SAME library function directly (no HTTP hop) until done.
+// One chunk per invocation. The browser driver (handleSend in the broadcast
+// page) calls this repeatedly until the broadcast reaches a terminal status;
+// the every-minute cron is the backstop for when the tab is closed.
 export const maxDuration = 60;
 
-// Send a broadcast — processes ONE chunk per invocation, synchronously.
-// The cron picks up the rest of the broadcast in subsequent invocations.
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const cronSecret = process.env.CRON_SECRET;
   const isCron = cronSecret && request.headers.get("x-cron-secret") === cronSecret;
@@ -18,18 +17,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   }
 
   const { id } = await params;
-  const result = await processBroadcastChunk(id);
+  const result = await processBroadcastChunk(id, { source: isCron ? "cron" : "manual" });
 
-  if (!result.ok) {
-    // skipped (another worker active, race lost) is informational, not an error
-    const status = result.skipped ? 200 : 400;
-    return NextResponse.json(
-      status === 200
-        ? ok({ id, skipped: true, reason: result.reason })
-        : fail(result.reason),
-      { status },
-    );
-  }
-
+  // Always 200 with the structured result so the client driver can read
+  // { status, done, terminal, pendingCount, reason } uniformly and decide
+  // whether to keep looping. Errors are conveyed via result.ok / result.reason.
   return NextResponse.json(ok(result));
 }

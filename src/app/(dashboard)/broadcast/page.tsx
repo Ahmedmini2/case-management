@@ -4,9 +4,9 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { formatDistanceToNow, format } from "date-fns";
 import { toast } from "sonner";
 import {
-  Send, Upload, Plus, Trash2, Play, CheckCircle2, XCircle, Clock,
+  Send, Upload, Plus, Trash2, Play, XCircle, Clock,
   Loader2, FileSpreadsheet, Users, ArrowLeft, X, Phone, AlertCircle,
-  Radio, RefreshCw, FileText, Sparkles, Eye, Copy, ExternalLink, MoreVertical,
+  Radio, RefreshCw, FileText, Copy, ExternalLink, MoreVertical,
   Search, Tag, Check, Save, Square, RotateCw,
 } from "lucide-react";
 
@@ -330,6 +330,56 @@ function TemplatePreviewCard({
 }
 
 /* ------------------------------------------------------------------ */
+/*  BROADCAST DRIVER — pushes a SENDING broadcast to completion        */
+/* ------------------------------------------------------------------ */
+
+// Each /send call sends one time-budget worth of messages and returns the live
+// status. The browser repeats it until the broadcast is terminal, so large
+// broadcasts finish without waiting on the once-a-minute cron. The server
+// claims every recipient atomically, so overlapping callers are always safe;
+// the cross-tab lock below only avoids wasted duplicate work.
+
+// Must exceed how long one /send chunk can run (~45s budget, up to the 60s
+// function ceiling) so another tab doesn't steal the lock mid-chunk while this
+// tab is busy awaiting the request.
+const DRIVER_LOCK_TTL = 90000;
+const driverSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const driverLockKey = (id: string) => `bcast-driver:${id}`;
+
+function acquireDriverLock(id: string, me: string): boolean {
+  try {
+    const raw = localStorage.getItem(driverLockKey(id));
+    if (raw) {
+      const { owner, ts } = JSON.parse(raw) as { owner: string; ts: number };
+      if (owner !== me && Date.now() - ts < DRIVER_LOCK_TTL) return false;
+    }
+    localStorage.setItem(driverLockKey(id), JSON.stringify({ owner: me, ts: Date.now() }));
+    return true;
+  } catch {
+    return true; // localStorage unavailable — proceed; the server CAS keeps it safe
+  }
+}
+
+function releaseDriverLock(id: string, me: string) {
+  try {
+    const raw = localStorage.getItem(driverLockKey(id));
+    if (!raw) return;
+    const { owner } = JSON.parse(raw) as { owner: string };
+    if (owner === me) localStorage.removeItem(driverLockKey(id));
+  } catch {
+    /* ignore */
+  }
+}
+
+type DriveResult = {
+  ok?: boolean;
+  status?: string;
+  terminal?: boolean;
+  done?: boolean;
+  reason?: string;
+};
+
+/* ------------------------------------------------------------------ */
 /*  COMPONENT                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -396,6 +446,9 @@ export default function BroadcastPage() {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
   const fileRef = useRef<HTMLInputElement>(null);
+  // Broadcasts this tab is actively driving + a stable id for the cross-tab lock.
+  const drivingRef = useRef<Set<string>>(new Set());
+  const tabIdRef = useRef<string>(Math.random().toString(36).slice(2));
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
 
@@ -408,6 +461,60 @@ export default function BroadcastPage() {
     } catch { /* silent */ }
     finally { setLoading(false); }
   }, []);
+
+  // Drive a broadcast to completion from the browser: keep POSTing /send (each
+  // call sends one budget worth of messages) until the broadcast is terminal.
+  // Idempotent — an in-tab guard plus a cross-tab lock prevent duplicate drivers,
+  // and the server claims every recipient atomically regardless.
+  const driveBroadcast = useCallback(async (id: string) => {
+    if (drivingRef.current.has(id)) return;
+    drivingRef.current.add(id);
+    const me = tabIdRef.current;
+    try {
+      let guard = 0;
+      let netErrors = 0; // consecutive transport failures; resets on any response
+      while (guard++ < 100000) {
+        if (!acquireDriverLock(id, me)) break; // another tab owns this broadcast
+        let result: DriveResult | null = null;
+        try {
+          const res = await fetch(`/api/whatsapp/broadcasts/${id}/send`, { method: "POST" });
+          const json = (await res.json()) as { data?: DriveResult; error?: string };
+          result = json.data ?? null;
+          if (!res.ok && !result) {
+            toast.error(
+              res.status === 401 || res.status === 403
+                ? "Session expired — please log in again."
+                : json.error ?? "Send failed",
+            );
+            break;
+          }
+          netErrors = 0;
+        } catch {
+          // Network blip or a long chunk that outran the gateway timeout — the
+          // server kept all progress, so retry a few times. Give up (the cron +
+          // auto-resume still finish it server-side) if it's persistently down.
+          if (++netErrors > 5) {
+            toast.error("Network problem — sending paused; it will resume automatically.");
+            break;
+          }
+          await driverSleep(Math.min(3000 * netErrors, 15000));
+          continue;
+        }
+        void loadBroadcasts();
+        if (!result) { await driverSleep(2000); continue; }
+        const status = result.status;
+        if (result.done || result.terminal || (status !== undefined && status !== "SENDING")) {
+          if (result.ok === false && result.reason) toast.error(result.reason);
+          else if (status === "COMPLETED") toast.success("Broadcast complete");
+          break;
+        }
+        await driverSleep(1200); // gentle back-pressure between chunks
+      }
+    } finally {
+      drivingRef.current.delete(id);
+      releaseDriverLock(id, me);
+    }
+  }, [loadBroadcasts]);
 
   const loadTemplates = useCallback(async () => {
     try {
@@ -460,6 +567,15 @@ export default function BroadcastPage() {
     }, 3000);
     return () => clearInterval(id);
   }, [activeBroadcast]);
+
+  // Make sure every SENDING broadcast has a driver — covers page reloads with an
+  // in-flight broadcast and the moment a freshly-sent one flips to SENDING. The
+  // in-tab guard + cross-tab lock keep this from spawning duplicate drivers.
+  useEffect(() => {
+    for (const b of broadcasts) {
+      if (b.status === "SENDING") void driveBroadcast(b.id);
+    }
+  }, [broadcasts, driveBroadcast]);
 
   /* ---- Actions ---- */
   async function openDetail(id: string) {
@@ -747,13 +863,17 @@ export default function BroadcastPage() {
 
   async function handleSend(id: string) {
     setSendingId(id);
-    try {
-      const res = await fetch(`/api/whatsapp/broadcasts/${id}/send`, { method: "POST" });
-      const json = (await res.json()) as { error?: string };
-      if (!res.ok) { toast.error(json.error ?? "Failed"); } else { toast.success("Broadcast sending started"); }
-      await loadBroadcasts();
-    } catch { toast.error("Failed"); }
-    setSendingId(null);
+    toast.success("Broadcast sending started");
+    // Start the browser driver — it pushes the broadcast through every chunk to
+    // completion. (The auto-resume effect also picks up SENDING broadcasts, but
+    // we kick it now for an immediate start.)
+    void driveBroadcast(id);
+    // Let the first chunk flip the status, then refresh so the row shows Stop
+    // and drop the Send spinner.
+    setTimeout(() => {
+      void loadBroadcasts();
+      setSendingId((cur) => (cur === id ? null : cur));
+    }, 1500);
   }
 
   async function handleDelete(id: string) {
@@ -799,6 +919,8 @@ export default function BroadcastPage() {
         toast.error(json.error ?? "Failed to resume");
       } else {
         toast.success("Broadcast resumed");
+        // Drive the requeued recipients to completion from the browser.
+        void driveBroadcast(id);
       }
       await loadBroadcasts();
       if (view === "detail" && activeBroadcast?.id === id) {

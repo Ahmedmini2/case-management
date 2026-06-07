@@ -1,48 +1,74 @@
-// Chunked broadcast sender.
+// Chunked broadcast sender — crash-safe, self-continuing.
 //
-// One call drains up to CHUNK_SIZE PENDING recipients for a single broadcast,
-// synchronously, inside the calling serverless invocation's lifetime. It
-// returns when the chunk is done or when we run out of time budget — never
-// using fire-and-forget. Both the /send HTTP endpoint and the cron call this
-// directly, so there is no cross-function HTTP fire-and-forget anywhere.
+// One call to processBroadcastChunk() drains as many PENDING recipients as fit
+// inside a bounded time budget, sending them concurrently (rate-limited) and
+// recovering anything a previous worker left orphaned. It is safe to run many
+// of these concurrently for the same broadcast: every recipient row is claimed
+// with an atomic compare-and-swap, and every terminal write is guarded so a
+// reclaimed row can never be clobbered by a slow worker.
+//
+// Two things drive a broadcast to completion:
+//   1. The client driver (browser) calls /send repeatedly until COMPLETED.
+//   2. The every-minute Vercel cron calls this directly as a backstop.
+// Neither uses cross-function fire-and-forget (Vercel would kill it).
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
 
-const CHUNK_SIZE = 150;
+/* ----------------------------- Tunables ---------------------------------- */
 
-// If a SENDING broadcast has had no recipient state change for this long, we
-// assume the previous worker died (Vercel killed it) and allow a new one to
-// take over. Tighter than the time between cron ticks (60s) so we don't stall.
-const STUCK_MS = 3 * 60 * 1000;
+// Recipients claimed per batch. Small enough that a batch settles well within
+// the budget even if a few sends hit the timeout.
+const BATCH_SIZE = 40;
 
-// Hard cap on how long we spend sending inside one invocation. Leaves a few
-// seconds of headroom under Vercel's 60s Pro budget to flush counts.
-const SEND_BUDGET_MS = 55 * 1000;
+// Concurrent in-flight sends inside a batch.
+const CONCURRENCY = 8;
 
-// Mild per-message throttle so we stay friendly to the Graph API + Supabase.
-const PER_MESSAGE_DELAY_MS = 30;
+// Soft outbound cap (messages/sec). Meta Cloud API default throughput is ~80/s;
+// we stay under it with headroom. Enforced by a token bucket per invocation.
+const RATE_PER_SEC = 40;
 
-export type ProcessChunkResult =
-  | {
-      ok: true;
-      broadcastId: string;
-      status: "SENDING" | "COMPLETED" | "FAILED";
-      done: boolean; // true when no PENDING recipients remain
-      chunkSent: number;
-      chunkFailed: number;
-      sentCount: number;
-      failedCount: number;
-      pendingCount: number;
-      totalCount: number;
-    }
-  | {
-      ok: false;
-      broadcastId: string;
-      reason: string;
-      // Set to true when we voluntarily skipped because another worker looks
-      // active. NOT an error — just informational.
-      skipped?: boolean;
-    };
+// Per-message Graph API timeout. WITHOUT this, one hung request stalls the whole
+// invocation until the platform kills it — the classic "sent ~5 then stuck".
+const FETCH_TIMEOUT_MS = 15_000;
+
+// How long we spend sending in one invocation before returning. Leaves headroom
+// under the 60s function ceiling for in-flight requests to settle + write counts.
+const SEND_BUDGET_MS = 45_000;
+
+// A row stuck in SENDING longer than this is assumed orphaned by a dead worker
+// and reclaimed to PENDING. MUST exceed the max function lifetime (~60s) so we
+// never reclaim a row a *live* worker still owns.
+const STALE_CLAIM_MS = 120_000;
+
+// Cron back-pressure window. If a broadcast had recipient activity within this
+// window, a client driver is assumed to be actively pushing it, so the cron
+// defers to avoid doubling the outbound rate. Manual/driver calls never defer.
+const RECENT_ACTIVITY_MS = 75_000;
+
+// Max transient-failure attempts (timeout / 429 / 5xx) before a recipient is
+// marked FAILED. Bounds the retry loop so the broadcast always terminates.
+const MAX_ATTEMPTS = 5;
+
+const GRAPH_VERSION = "v19.0";
+
+/* ------------------------------- Types ----------------------------------- */
+
+export type ProcessChunkResult = {
+  ok: boolean;
+  broadcastId: string;
+  status: string; // current broadcast status — always present
+  done: boolean; // true => no more work; driver should stop looping
+  terminal: boolean; // true => stop (completed/failed/stopped/config error)
+  skipped: boolean; // true => no work this call but not an error (e.g. cron deferred)
+  reason?: string;
+  sentCount: number;
+  failedCount: number;
+  pendingCount: number;
+  inflightCount: number;
+  totalCount: number;
+  chunkSent: number;
+  chunkFailed: number;
+};
 
 type Tpl = {
   id: string;
@@ -59,47 +85,69 @@ type Broadcast = {
   status: string;
   templateId: string | null;
   templateVars: Record<string, string> | null;
-  sentCount: number;
-  failedCount: number;
   message: string;
   startedAt: string | null;
 };
 
-export async function processBroadcastChunk(broadcastId: string): Promise<ProcessChunkResult> {
+type Claimed = {
+  id: string;
+  phone: string;
+  contactName: string | null;
+  attempts: number | null;
+  // The exact claim timestamp this worker stamped (as returned by Postgres).
+  // Every terminal write matches on it so a worker can only mutate a row it
+  // still owns — even if a stale-recovery worker reclaimed it in between.
+  claimedAt: string | null;
+};
+
+type Counts = {
+  total: number;
+  sent: number;
+  failed: number;
+  pending: number;
+  inflight: number;
+};
+
+type SendCtx = {
+  phoneNumberId: string;
+  token: string;
+  template: Tpl;
+  components: Record<string, unknown>[];
+  broadcastMessage: string;
+};
+
+/* ------------------------------- Entry ----------------------------------- */
+
+export async function processBroadcastChunk(
+  broadcastId: string,
+  opts: { source?: "manual" | "cron" } = {},
+): Promise<ProcessChunkResult> {
   const sb = supabaseAdmin();
+  const source = opts.source ?? "manual";
 
   const { data: broadcastRow, error: bErr } = await sb
     .from("broadcasts")
-    .select("id, status, templateId, templateVars, sentCount, failedCount, message, startedAt")
+    .select("id, status, templateId, templateVars, message, startedAt")
     .eq("id", broadcastId)
     .maybeSingle();
 
-  if (bErr) return { ok: false, broadcastId, reason: bErr.message };
-  if (!broadcastRow) return { ok: false, broadcastId, reason: "Broadcast not found" };
-
+  if (bErr) return errorResult(broadcastId, "DRAFT", bErr.message);
+  if (!broadcastRow) return errorResult(broadcastId, "DRAFT", "Broadcast not found");
   const broadcast = broadcastRow as Broadcast;
 
-  if (broadcast.status === "COMPLETED") {
-    return { ok: false, broadcastId, reason: "Already completed" };
-  }
-  if (broadcast.status === "FAILED") {
-    return { ok: false, broadcastId, reason: "Marked FAILED — reset to DRAFT to retry" };
-  }
-  if (broadcast.status === "STOPPED") {
-    return { ok: false, broadcastId, reason: "Broadcast was stopped", skipped: true };
-  }
-
-  // Concurrency guard: if another worker is actively processing this broadcast,
-  // bail. Detected via the most recent recipient state-change timestamp.
-  if (broadcast.status === "SENDING") {
-    const isStuck = await isBroadcastStuck(broadcastId, broadcast.startedAt);
-    if (!isStuck) {
-      return { ok: false, broadcastId, reason: "Another worker is active", skipped: true };
-    }
-    // Fall through and resume.
+  // Already-terminal broadcasts: report current counts, do nothing.
+  if (["COMPLETED", "FAILED", "STOPPED", "CANCELLED"].includes(broadcast.status)) {
+    const counts = await recomputeCounts(broadcastId);
+    return doneResult(
+      broadcastId,
+      broadcast.status,
+      counts,
+      broadcast.status === "STOPPED" ? "Broadcast was stopped" : undefined,
+    );
   }
 
-  // Load the template once.
+  // Validate template + credentials BEFORE flipping to SENDING, so a
+  // misconfigured broadcast surfaces an error instead of getting stuck.
   let template: Tpl | null = null;
   if (broadcast.templateId) {
     const { data: tplRow } = await sb
@@ -109,317 +157,382 @@ export async function processBroadcastChunk(broadcastId: string): Promise<Proces
       .maybeSingle();
     template = (tplRow as Tpl | null) ?? null;
   }
-
-  if (!template) return { ok: false, broadcastId, reason: "No template linked" };
+  if (!template) return errorResult(broadcastId, broadcast.status, "No template linked");
   if (template.status !== "APPROVED") {
-    return {
-      ok: false,
+    return errorResult(
       broadcastId,
-      reason: `Template "${template.name}" is not APPROVED (status: ${template.status})`,
-    };
+      broadcast.status,
+      `Template "${template.name}" is not APPROVED (status: ${template.status})`,
+    );
   }
 
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
   if (!phoneNumberId || !token) {
-    return { ok: false, broadcastId, reason: "WhatsApp API credentials not configured" };
+    return errorResult(broadcastId, broadcast.status, "WhatsApp API credentials not configured");
   }
 
-  // Build the template payload once — identical for every recipient.
-  const components: Record<string, unknown>[] = [];
-  if (template.headerType && template.headerType !== "TEXT" && template.headerMediaUrl) {
-    const fmt = template.headerType.toLowerCase(); // "image" | "video" | "document"
-    const param: Record<string, unknown> = { type: fmt };
-    if (fmt === "image") param.image = { link: template.headerMediaUrl };
-    else if (fmt === "video") param.video = { link: template.headerMediaUrl };
-    else if (fmt === "document") param.document = { link: template.headerMediaUrl, filename: "document.pdf" };
-    components.push({ type: "header", parameters: [param] });
-  }
-  const templateVars = (broadcast.templateVars ?? {}) as Record<string, string>;
-  if (template.variableCount > 0) {
-    const parameters = Array.from({ length: template.variableCount }, (_, i) => ({
-      type: "text",
-      text: templateVars[String(i + 1)] ?? `{{${i + 1}}}`,
-    }));
-    components.push({ type: "body", parameters });
+  // 1) Recover stale claims orphaned by a killed worker (SENDING -> PENDING).
+  await reclaimStale(broadcastId);
+
+  // 2) Unconditional finalize sweep. Decoupled from the send path so ANY trigger
+  //    (driver OR cron) that runs after the last message completes the broadcast,
+  //    regardless of which worker sent it or whether that worker died.
+  let counts = await recomputeCounts(broadcastId);
+  if (counts.pending === 0 && counts.inflight === 0) {
+    return await finalize(broadcastId, counts);
   }
 
-  // Flip to SENDING if needed, stamping startedAt the first time.
+  // 3) Cron back-pressure: defer to an active client driver to avoid doubling
+  //    the outbound rate. The driver (source: "manual") always proceeds.
+  if (source === "cron" && (await hasRecentActivity(broadcastId))) {
+    return skippedResult(broadcastId, "SENDING", counts, "Client driver active");
+  }
+
+  // 4) Flip DRAFT/SCHEDULED -> SENDING, stamping startedAt once.
   if (broadcast.status !== "SENDING") {
     await sb
       .from("broadcasts")
-      .update({
-        status: "SENDING",
-        startedAt: broadcast.startedAt ?? new Date().toISOString(),
-      })
+      .update({ status: "SENDING", startedAt: broadcast.startedAt ?? new Date().toISOString() })
       .eq("id", broadcastId);
   }
 
-  // Pull this chunk's pending recipients.
-  const { data: recipientsRaw, error: recErr } = await sb
-    .from("broadcast_recipients")
-    .select("id, phone, contactName")
-    .eq("broadcastId", broadcastId)
-    .eq("status", "PENDING")
-    .order("createdAt", { ascending: true, nullsFirst: true })
-    .limit(CHUNK_SIZE);
-
-  if (recErr) return { ok: false, broadcastId, reason: recErr.message };
-
-  const recipients = (recipientsRaw ?? []) as {
-    id: string;
-    phone: string;
-    contactName: string | null;
-  }[];
-
-  if (recipients.length === 0) {
-    // No PENDING left → finalize.
-    return await finalizeIfDone(broadcastId);
-  }
-
-  // Race protection: claim each recipient by setting status to SENDING. The
-  // .eq("status", "PENDING") clause acts as compare-and-swap; if another
-  // worker grabbed the row first it has already moved off PENDING and our
-  // update silently matches zero rows. We re-read what we actually own.
-  const recipientIds = recipients.map((r) => r.id);
-  const { data: claimedRaw, error: claimErr } = await sb
-    .from("broadcast_recipients")
-    .update({ status: "SENDING" })
-    .in("id", recipientIds)
-    .eq("status", "PENDING")
-    .select("id, phone, contactName");
-
-  if (claimErr) return { ok: false, broadcastId, reason: claimErr.message };
-
-  const claimed = (claimedRaw ?? []) as {
-    id: string;
-    phone: string;
-    contactName: string | null;
-  }[];
-
-  if (claimed.length === 0) {
-    // Lost every race to another worker. Bail without re-finalizing.
-    return { ok: false, broadcastId, reason: "Lost race for chunk", skipped: true };
-  }
-
-  // Process the chunk. We're synchronous inside the request lifetime, so the
-  // serverless runtime keeps the process alive until we return.
-  const broadcastMessage = broadcast.message;
+  // 5) Send batches until the budget is spent or PENDING is drained.
+  const ctx: SendCtx = {
+    phoneNumberId,
+    token,
+    template,
+    components: buildComponents(template, broadcast.templateVars ?? {}),
+    broadcastMessage: broadcast.message,
+  };
+  const deadline = Date.now() + SEND_BUDGET_MS;
+  const bucket = new TokenBucket(RATE_PER_SEC);
   let chunkSent = 0;
   let chunkFailed = 0;
-  let stoppedMidChunk = false;
-  const deadline = Date.now() + SEND_BUDGET_MS;
+  let stopped = false;
 
-  for (let i = 0; i < claimed.length; i++) {
-    const recipient = claimed[i];
-
-    // Periodically re-check the broadcast row so a Stop click during this
-    // chunk takes effect within ~25 messages instead of waiting for the
-    // whole chunk (or the entire 55s budget) to finish.
-    if (i > 0 && i % 25 === 0) {
-      const { data: latest } = await sb
-        .from("broadcasts")
-        .select("status")
-        .eq("id", broadcastId)
-        .maybeSingle();
-      if ((latest as { status: string } | null)?.status === "STOPPED") {
-        stoppedMidChunk = true;
-        // Roll the rest of the claimed-but-unsent rows back to PENDING.
-        const remainingIds = claimed.slice(i).map((r) => r.id);
-        if (remainingIds.length > 0) {
-          await sb
-            .from("broadcast_recipients")
-            .update({ status: "PENDING" })
-            .in("id", remainingIds);
-        }
-        break;
-      }
-    }
-
-    if (Date.now() > deadline) {
-      // Hand the rest back to PENDING so the next worker can pick them up.
-      const remainingIds = claimed.slice(i).map((r) => r.id);
-      if (remainingIds.length > 0) {
-        await sb
-          .from("broadcast_recipients")
-          .update({ status: "PENDING" })
-          .in("id", remainingIds);
-      }
+  while (Date.now() < deadline) {
+    // Honor a Stop click between batches.
+    const { data: st } = await sb
+      .from("broadcasts")
+      .select("status")
+      .eq("id", broadcastId)
+      .maybeSingle();
+    const live = (st as { status: string } | null)?.status;
+    if (live === "STOPPED" || live === "CANCELLED") {
+      stopped = true;
       break;
     }
 
-    try {
-      const payload: Record<string, unknown> = {
-        messaging_product: "whatsapp",
-        to: recipient.phone,
-        type: "template",
-        template: {
-          name: template.name,
-          language: { code: template.language },
-          ...(components.length > 0 ? { components } : {}),
-        },
-      };
+    const claimed = await claimBatch(broadcastId, BATCH_SIZE);
+    if (claimed.length === 0) break; // nothing left to claim
 
-      const waRes = await fetch(
-        `https://graph.facebook.com/v19.0/${phoneNumberId}/messages`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(payload),
-        },
-      );
-
-      if (waRes.ok) {
-        const data = (await waRes.json()) as { messages?: { id: string }[] };
-        const waMsgId = data.messages?.[0]?.id ?? null;
-        await sb
-          .from("broadcast_recipients")
-          .update({
-            status: "SENT",
-            whatsappMsgId: waMsgId,
-            sentAt: new Date().toISOString(),
-          })
-          .eq("id", recipient.id);
-        chunkSent++;
-
-        // Mirror into the WhatsApp chat UI. Best-effort — if any of this
-        // fails we still consider the message sent (Meta accepted it).
-        try {
-          await mirrorToChat(
-            recipient.phone,
-            recipient.contactName,
-            broadcastMessage,
-            waMsgId,
-          );
-        } catch (chatErr) {
-          console.error("[Broadcast] mirror-to-chat failed:", chatErr);
-        }
-      } else {
-        const errText = await waRes.text();
-        await sb
-          .from("broadcast_recipients")
-          .update({ status: "FAILED", error: errText.slice(0, 500) })
-          .eq("id", recipient.id);
-        chunkFailed++;
-      }
-    } catch (err) {
-      await sb
-        .from("broadcast_recipients")
-        .update({ status: "FAILED", error: String(err).slice(0, 500) })
-        .eq("id", recipient.id);
-      chunkFailed++;
-    }
-
-    if (PER_MESSAGE_DELAY_MS > 0) {
-      await new Promise((r) => setTimeout(r, PER_MESSAGE_DELAY_MS));
-    }
+    const res = await sendBatch(sb, ctx, claimed, bucket, deadline);
+    chunkSent += res.sent;
+    chunkFailed += res.failed;
   }
 
-  // Update aggregate counts so the UI poll sees fresh numbers.
-  const counts = await recomputeCounts(broadcastId);
+  // 6) Publish aggregate counts for the UI poll.
+  counts = await recomputeCounts(broadcastId);
   await sb
     .from("broadcasts")
     .update({ sentCount: counts.sent, failedCount: counts.failed })
     .eq("id", broadcastId);
 
-  // If the user clicked Stop mid-chunk, the broadcast is now STOPPED. Don't
-  // override that with COMPLETED even if pending happens to be 0.
-  if (stoppedMidChunk) {
-    return {
-      ok: false,
-      broadcastId,
-      reason: "Broadcast was stopped",
-      skipped: true,
-    };
+  if (stopped) {
+    return skippedResult(broadcastId, "STOPPED", counts, "Broadcast was stopped");
   }
-
-  // Auto-finalize if this chunk drained the last of the PENDING.
-  if (counts.pending === 0) {
-    return await finalizeIfDone(broadcastId);
+  if (counts.pending === 0 && counts.inflight === 0) {
+    return await finalize(broadcastId, counts);
   }
-
+  // Budget hit with work remaining — the driver/cron will call again.
   return {
     ok: true,
     broadcastId,
     status: "SENDING",
     done: false,
-    chunkSent,
-    chunkFailed,
+    terminal: false,
+    skipped: false,
     sentCount: counts.sent,
     failedCount: counts.failed,
     pendingCount: counts.pending,
+    inflightCount: counts.inflight,
     totalCount: counts.total,
+    chunkSent,
+    chunkFailed,
   };
 }
 
-async function isBroadcastStuck(
-  broadcastId: string,
-  startedAt: string | null,
-): Promise<boolean> {
-  const sb = supabaseAdmin();
-  const { data } = await sb
-    .from("broadcast_recipients")
-    .select("sentAt, updatedAt")
-    .eq("broadcastId", broadcastId)
-    .neq("status", "PENDING")
-    .order("sentAt", { ascending: false, nullsFirst: false })
-    .limit(1)
-    .maybeSingle();
+/* ------------------------------ Claiming --------------------------------- */
 
-  const row = data as { sentAt: string | null; updatedAt: string | null } | null;
-  const lastTs = row?.sentAt ?? row?.updatedAt ?? startedAt;
-  if (!lastTs) return true; // never made progress — safe to take over
-  return Date.now() - new Date(lastTs).getTime() > STUCK_MS;
+async function claimBatch(broadcastId: string, size: number): Promise<Claimed[]> {
+  const sb = supabaseAdmin();
+  const { data: pend } = await sb
+    .from("broadcast_recipients")
+    .select("id")
+    .eq("broadcastId", broadcastId)
+    .eq("status", "PENDING")
+    .order("createdAt", { ascending: true, nullsFirst: true })
+    .limit(size);
+  const ids = ((pend ?? []) as { id: string }[]).map((r) => r.id);
+  if (ids.length === 0) return [];
+
+  // Compare-and-swap: only rows still PENDING flip to SENDING. Concurrent
+  // workers reading the same page therefore claim disjoint subsets. We read
+  // claimedAt back so every later write can prove ownership of this exact claim.
+  const { data: claimed } = await sb
+    .from("broadcast_recipients")
+    .update({ status: "SENDING", claimedAt: new Date().toISOString() })
+    .in("id", ids)
+    .eq("status", "PENDING")
+    .select("id, phone, contactName, attempts, claimedAt");
+
+  return (claimed ?? []) as Claimed[];
 }
 
-async function recomputeCounts(broadcastId: string): Promise<{
-  total: number;
-  sent: number;
-  failed: number;
-  pending: number;
-  inflight: number;
-}> {
-  const sb = supabaseAdmin();
-  const { data } = await sb
-    .from("broadcast_recipients")
-    .select("status")
-    .eq("broadcastId", broadcastId);
-  const rows = (data ?? []) as { status: string }[];
+/* ------------------------------- Sending --------------------------------- */
+
+async function sendBatch(
+  sb: ReturnType<typeof supabaseAdmin>,
+  ctx: SendCtx,
+  claimed: Claimed[],
+  bucket: TokenBucket,
+  deadline: number,
+): Promise<{ sent: number; failed: number }> {
   let sent = 0;
   let failed = 0;
-  let pending = 0;
-  let inflight = 0;
-  for (const r of rows) {
-    if (r.status === "SENT" || r.status === "DELIVERED" || r.status === "READ") sent++;
-    else if (r.status === "FAILED") failed++;
-    else if (r.status === "PENDING") pending++;
-    else if (r.status === "SENDING") inflight++;
+  let idx = 0;
+
+  async function worker() {
+    for (;;) {
+      const i = idx++;
+      if (i >= claimed.length) return;
+      const r = claimed[i];
+
+      // Past the budget: don't start new sends. Hand the row back so it isn't
+      // orphaned in SENDING (stale recovery would otherwise wait STALE_CLAIM_MS).
+      if (Date.now() > deadline) {
+        await releaseToPending(sb, r);
+        continue;
+      }
+
+      await bucket.take();
+      const outcome = await sendOne(sb, ctx, r);
+      if (outcome === "sent") sent++;
+      else if (outcome === "failed") failed++;
+      // "retry" (back to PENDING) and "skip" (claim stolen) are not counted here;
+      // authoritative totals come from recomputeCounts().
+    }
   }
-  return { total: rows.length, sent, failed, pending, inflight };
+
+  const workers = Array.from({ length: Math.min(CONCURRENCY, claimed.length) }, worker);
+  await Promise.all(workers);
+  return { sent, failed };
 }
 
-async function finalizeIfDone(broadcastId: string): Promise<ProcessChunkResult> {
-  const sb = supabaseAdmin();
-  const counts = await recomputeCounts(broadcastId);
-  if (counts.pending > 0 || counts.inflight > 0) {
-    return {
-      ok: true,
-      broadcastId,
-      status: "SENDING",
-      done: false,
-      chunkSent: 0,
-      chunkFailed: 0,
-      sentCount: counts.sent,
-      failedCount: counts.failed,
-      pendingCount: counts.pending,
-      totalCount: counts.total,
-    };
+type SendOutcome = "sent" | "failed" | "retry" | "skip";
+
+async function sendOne(
+  sb: ReturnType<typeof supabaseAdmin>,
+  ctx: SendCtx,
+  r: Claimed,
+): Promise<SendOutcome> {
+  const payload: Record<string, unknown> = {
+    messaging_product: "whatsapp",
+    to: r.phone,
+    type: "template",
+    template: {
+      name: ctx.template.name,
+      language: { code: ctx.template.language },
+      ...(ctx.components.length > 0 ? { components: ctx.components } : {}),
+    },
+  };
+
+  let res: Response | null = null;
+  let networkErr = false;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    res = await fetch(`https://graph.facebook.com/${GRAPH_VERSION}/${ctx.phoneNumberId}/messages`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${ctx.token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch {
+    networkErr = true; // includes AbortError (timeout) and connection failures
+  } finally {
+    clearTimeout(timer);
   }
+
+  // Timeout / network error -> transient (retry with backoff via the loop).
+  if (networkErr || !res) {
+    return await markTransient(sb, r, "Request timed out or network error");
+  }
+
+  if (res.ok) {
+    const data = (await res.json().catch(() => ({}))) as { messages?: { id: string }[] };
+    const waMsgId = data.messages?.[0]?.id ?? null;
+    // Terminal write is itself a CAS: only succeed if we still own this exact
+    // claim (status === SENDING AND claimedAt unchanged). If a stale-recovery
+    // worker stole the claim, this matches 0 rows and we DON'T mirror — the new
+    // owner will record it.
+    const { data: updated } = await sb
+      .from("broadcast_recipients")
+      .update({
+        status: "SENT",
+        whatsappMsgId: waMsgId,
+        sentAt: new Date().toISOString(),
+        claimedAt: null,
+      })
+      .eq("id", r.id)
+      .eq("status", "SENDING")
+      .eq("claimedAt", r.claimedAt)
+      .select("id");
+    if (!updated || (updated as unknown[]).length === 0) return "skip";
+
+    try {
+      await mirrorToChat(r.phone, r.contactName, ctx.broadcastMessage, waMsgId);
+    } catch (chatErr) {
+      console.error("[Broadcast] mirror-to-chat failed:", chatErr);
+    }
+    return "sent";
+  }
+
+  // Non-OK HTTP. 429 (rate limit) and 5xx are transient; 4xx business errors
+  // (invalid number, template paused, messaging-limit reached, bad token) are
+  // terminal — the error text is preserved so the user can see why.
+  const errText = (await res.text().catch(() => "")).slice(0, 500);
+  if (res.status === 429 || res.status >= 500) {
+    if (res.status === 429) {
+      // Throughput throttle — back off (honoring Retry-After, capped) so we ride
+      // out short bursts instead of burning the retry budget in a few seconds.
+      const retryAfter = Number(res.headers.get("retry-after"));
+      const backoff = Number.isFinite(retryAfter) && retryAfter > 0 ? Math.min(retryAfter * 1000, 10_000) : 2_000;
+      await new Promise((rs) => setTimeout(rs, backoff));
+    }
+    return await markTransient(sb, r, errText);
+  }
+  const { data: failedRows } = await sb
+    .from("broadcast_recipients")
+    .update({ status: "FAILED", error: errText, claimedAt: null })
+    .eq("id", r.id)
+    .eq("status", "SENDING")
+    .eq("claimedAt", r.claimedAt)
+    .select("id");
+  return !failedRows || (failedRows as unknown[]).length === 0 ? "skip" : "failed";
+}
+
+// Transient failure: bump the attempt counter and either retry (back to
+// PENDING) or, once exhausted, mark FAILED. Both writes are CAS-guarded on the
+// claim so they no-op if the row was reclaimed out from under us.
+async function markTransient(
+  sb: ReturnType<typeof supabaseAdmin>,
+  r: Claimed,
+  errText: string,
+): Promise<SendOutcome> {
+  const nextAttempts = (r.attempts ?? 0) + 1;
+  if (nextAttempts >= MAX_ATTEMPTS) {
+    const { data } = await sb
+      .from("broadcast_recipients")
+      .update({
+        status: "FAILED",
+        error: (errText || "Failed after maximum retries").slice(0, 500),
+        attempts: nextAttempts,
+        claimedAt: null,
+      })
+      .eq("id", r.id)
+      .eq("status", "SENDING")
+      .eq("claimedAt", r.claimedAt)
+      .select("id");
+    return !data || (data as unknown[]).length === 0 ? "skip" : "failed";
+  }
+  const { data } = await sb
+    .from("broadcast_recipients")
+    .update({ status: "PENDING", attempts: nextAttempts, claimedAt: null })
+    .eq("id", r.id)
+    .eq("status", "SENDING")
+    .eq("claimedAt", r.claimedAt)
+    .select("id");
+  return !data || (data as unknown[]).length === 0 ? "skip" : "retry";
+}
+
+// Return a claimed-but-unsent row to PENDING (e.g. budget hit). Not an attempt.
+// Guarded on the claim so a row already reclaimed by stale recovery is left be.
+async function releaseToPending(sb: ReturnType<typeof supabaseAdmin>, r: Claimed): Promise<void> {
+  await sb
+    .from("broadcast_recipients")
+    .update({ status: "PENDING", claimedAt: null })
+    .eq("id", r.id)
+    .eq("status", "SENDING")
+    .eq("claimedAt", r.claimedAt);
+}
+
+/* --------------------------- Recovery / counts --------------------------- */
+
+async function reclaimStale(broadcastId: string): Promise<void> {
+  const sb = supabaseAdmin();
+  const cutoff = new Date(Date.now() - STALE_CLAIM_MS).toISOString();
+  // Claims older than the cutoff are from a dead worker (no live worker outlives
+  // the ~60s function ceiling).
+  await sb
+    .from("broadcast_recipients")
+    .update({ status: "PENDING", claimedAt: null })
+    .eq("broadcastId", broadcastId)
+    .eq("status", "SENDING")
+    .lt("claimedAt", cutoff);
+  // Legacy/edge rows stuck in SENDING with no claim timestamp.
+  await sb
+    .from("broadcast_recipients")
+    .update({ status: "PENDING", claimedAt: null })
+    .eq("broadcastId", broadcastId)
+    .eq("status", "SENDING")
+    .is("claimedAt", null);
+}
+
+async function hasRecentActivity(broadcastId: string): Promise<boolean> {
+  const sb = supabaseAdmin();
+  const cutoff = new Date(Date.now() - RECENT_ACTIVITY_MS).toISOString();
+  const { count: claimedRecent } = await sb
+    .from("broadcast_recipients")
+    .select("id", { count: "exact", head: true })
+    .eq("broadcastId", broadcastId)
+    .gt("claimedAt", cutoff);
+  if ((claimedRecent ?? 0) > 0) return true;
+  const { count: sentRecent } = await sb
+    .from("broadcast_recipients")
+    .select("id", { count: "exact", head: true })
+    .eq("broadcastId", broadcastId)
+    .gt("sentAt", cutoff);
+  return (sentRecent ?? 0) > 0;
+}
+
+async function recomputeCounts(broadcastId: string): Promise<Counts> {
+  const sb = supabaseAdmin();
+  const countWhere = async (statuses?: string[]): Promise<number> => {
+    let q = sb
+      .from("broadcast_recipients")
+      .select("id", { count: "exact", head: true })
+      .eq("broadcastId", broadcastId);
+    if (statuses) q = q.in("status", statuses);
+    const { count } = await q;
+    return count ?? 0;
+  };
+  const [total, sent, failed, pending, inflight] = await Promise.all([
+    countWhere(),
+    countWhere(["SENT", "DELIVERED", "READ"]),
+    countWhere(["FAILED"]),
+    countWhere(["PENDING"]),
+    countWhere(["SENDING"]),
+  ]);
+  return { total, sent, failed, pending, inflight };
+}
+
+async function finalize(broadcastId: string, counts: Counts): Promise<ProcessChunkResult> {
+  const sb = supabaseAdmin();
   const finalStatus: "COMPLETED" | "FAILED" =
     counts.failed === counts.total && counts.total > 0 ? "FAILED" : "COMPLETED";
+  // Don't override a concurrent Stop.
   await sb
     .from("broadcasts")
     .update({
@@ -428,20 +541,26 @@ async function finalizeIfDone(broadcastId: string): Promise<ProcessChunkResult> 
       failedCount: counts.failed,
       completedAt: new Date().toISOString(),
     })
-    .eq("id", broadcastId);
+    .eq("id", broadcastId)
+    .neq("status", "STOPPED");
   return {
     ok: true,
     broadcastId,
     status: finalStatus,
     done: true,
-    chunkSent: 0,
-    chunkFailed: 0,
+    terminal: true,
+    skipped: false,
     sentCount: counts.sent,
     failedCount: counts.failed,
     pendingCount: 0,
+    inflightCount: 0,
     totalCount: counts.total,
+    chunkSent: 0,
+    chunkFailed: 0,
   };
 }
+
+/* ------------------------------ Chat mirror ------------------------------ */
 
 async function mirrorToChat(
   phone: string,
@@ -453,33 +572,18 @@ async function mirrorToChat(
   const lastMessage = body.length > 200 ? body.slice(0, 200) + "..." : body;
   const nowIso = new Date().toISOString();
 
-  const { data: existingConv } = await sb
+  // Upsert by the unique contactPhone — avoids the select-then-insert race that
+  // would throw a duplicate-key error under concurrency.
+  const { data: conv } = await sb
     .from("whatsapp_conversations")
+    .upsert(
+      { contactName: contactName ?? phone, contactPhone: phone, lastMessage, lastMessageAt: nowIso },
+      { onConflict: "contactPhone" },
+    )
     .select("id")
-    .eq("contactPhone", phone)
-    .maybeSingle();
+    .single();
 
-  let conversationId: string | null = null;
-  if (existingConv) {
-    conversationId = (existingConv as { id: string }).id;
-    await sb
-      .from("whatsapp_conversations")
-      .update({ lastMessage, lastMessageAt: nowIso })
-      .eq("id", conversationId);
-  } else {
-    const { data: newConv } = await sb
-      .from("whatsapp_conversations")
-      .insert({
-        contactName: contactName ?? phone,
-        contactPhone: phone,
-        lastMessage,
-        lastMessageAt: nowIso,
-      })
-      .select("id")
-      .single();
-    conversationId = newConv ? (newConv as { id: string }).id : null;
-  }
-
+  const conversationId = conv ? (conv as { id: string }).id : null;
   if (conversationId) {
     await sb.from("whatsapp_messages").insert({
       conversationId,
@@ -493,4 +597,121 @@ async function mirrorToChat(
       isRead: true,
     });
   }
+}
+
+/* ------------------------------- Helpers --------------------------------- */
+
+function buildComponents(
+  template: Tpl,
+  templateVars: Record<string, string>,
+): Record<string, unknown>[] {
+  const components: Record<string, unknown>[] = [];
+  if (template.headerType && template.headerType !== "TEXT" && template.headerMediaUrl) {
+    const fmt = template.headerType.toLowerCase(); // "image" | "video" | "document"
+    const param: Record<string, unknown> = { type: fmt };
+    if (fmt === "image") param.image = { link: template.headerMediaUrl };
+    else if (fmt === "video") param.video = { link: template.headerMediaUrl };
+    else if (fmt === "document")
+      param.document = { link: template.headerMediaUrl, filename: "document.pdf" };
+    components.push({ type: "header", parameters: [param] });
+  }
+  if (template.variableCount > 0) {
+    const parameters = Array.from({ length: template.variableCount }, (_, i) => ({
+      type: "text",
+      text: templateVars[String(i + 1)] ?? `{{${i + 1}}}`,
+    }));
+    components.push({ type: "body", parameters });
+  }
+  return components;
+}
+
+// Simple per-invocation token bucket so concurrent workers share one rate cap.
+class TokenBucket {
+  private tokens: number;
+  private last: number;
+  constructor(private readonly ratePerSec: number) {
+    this.tokens = ratePerSec;
+    this.last = Date.now();
+  }
+  async take(): Promise<void> {
+    for (;;) {
+      const now = Date.now();
+      this.tokens = Math.min(this.ratePerSec, this.tokens + ((now - this.last) / 1000) * this.ratePerSec);
+      this.last = now;
+      if (this.tokens >= 1) {
+        this.tokens -= 1;
+        return;
+      }
+      const waitMs = Math.ceil(((1 - this.tokens) / this.ratePerSec) * 1000);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+}
+
+function errorResult(broadcastId: string, status: string, reason: string): ProcessChunkResult {
+  return {
+    ok: false,
+    broadcastId,
+    status,
+    done: true,
+    terminal: true,
+    skipped: false,
+    reason,
+    sentCount: 0,
+    failedCount: 0,
+    pendingCount: 0,
+    inflightCount: 0,
+    totalCount: 0,
+    chunkSent: 0,
+    chunkFailed: 0,
+  };
+}
+
+function doneResult(
+  broadcastId: string,
+  status: string,
+  counts: Counts,
+  reason?: string,
+): ProcessChunkResult {
+  return {
+    ok: true,
+    broadcastId,
+    status,
+    done: true,
+    terminal: true,
+    skipped: false,
+    reason,
+    sentCount: counts.sent,
+    failedCount: counts.failed,
+    pendingCount: counts.pending,
+    inflightCount: counts.inflight,
+    totalCount: counts.total,
+    chunkSent: 0,
+    chunkFailed: 0,
+  };
+}
+
+function skippedResult(
+  broadcastId: string,
+  status: string,
+  counts: Counts,
+  reason: string,
+): ProcessChunkResult {
+  const terminal = status === "STOPPED" || status === "CANCELLED";
+  return {
+    ok: true,
+    broadcastId,
+    status,
+    done: terminal,
+    terminal,
+    skipped: true,
+    reason,
+    sentCount: counts.sent,
+    failedCount: counts.failed,
+    pendingCount: counts.pending,
+    inflightCount: counts.inflight,
+    totalCount: counts.total,
+    chunkSent: 0,
+    chunkFailed: 0,
+  };
 }

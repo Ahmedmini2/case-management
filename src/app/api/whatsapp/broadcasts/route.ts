@@ -134,19 +134,43 @@ export async function POST(request: Request) {
 
   if (bErr || !broadcast) return NextResponse.json(fail(bErr?.message ?? "Failed to create broadcast"), { status: 500 });
 
-  const { error: rErr } = await sb.from("broadcast_recipients").insert(
-    unique.map((r) => ({
-      broadcastId: (broadcast as { id: string }).id,
-      phone: r.phone,
-      contactName: r.contactName,
-    })),
-  );
+  const broadcastId = (broadcast as { id: string }).id;
 
-  if (rErr) {
-    // Best-effort cleanup
-    await sb.from("broadcasts").delete().eq("id", (broadcast as { id: string }).id);
-    return NextResponse.json(fail(rErr.message), { status: 500 });
+  // Insert recipients in batches. A single insert of thousands of rows can hit
+  // the request-body limit and silently truncate — which would leave a broadcast
+  // claiming 4,000 recipients but only a handful of rows to actually send.
+  const RECIPIENT_BATCH = 500;
+  let inserted = 0;
+  for (let i = 0; i < unique.length; i += RECIPIENT_BATCH) {
+    const slice = unique.slice(i, i + RECIPIENT_BATCH);
+    const { data: rows, error: rErr } = await sb
+      .from("broadcast_recipients")
+      .insert(
+        slice.map((r) => ({
+          broadcastId,
+          phone: r.phone,
+          contactName: r.contactName,
+        })),
+      )
+      .select("id");
+
+    if (rErr) {
+      // Best-effort cleanup so we never leave a partially-populated broadcast.
+      await sb.from("broadcast_recipients").delete().eq("broadcastId", broadcastId);
+      await sb.from("broadcasts").delete().eq("id", broadcastId);
+      return NextResponse.json(fail(rErr.message), { status: 500 });
+    }
+    inserted += (rows as { id: string }[] | null)?.length ?? 0;
   }
 
-  return NextResponse.json(ok(broadcast), { status: 201 });
+  // Reconcile totalCount with what actually landed, so progress math is honest.
+  if (inserted !== unique.length) {
+    await sb.from("broadcasts").update({ totalCount: inserted }).eq("id", broadcastId);
+  }
+  if (inserted === 0) {
+    await sb.from("broadcasts").delete().eq("id", broadcastId);
+    return NextResponse.json(fail("Failed to save any recipients"), { status: 500 });
+  }
+
+  return NextResponse.json(ok({ ...(broadcast as Record<string, unknown>), totalCount: inserted }), { status: 201 });
 }

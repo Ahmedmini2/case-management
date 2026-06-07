@@ -660,6 +660,13 @@ model BroadcastRecipient {
   status        RecipientStatus @default(PENDING)
   whatsappMsgId String?
   error         String?
+  // When this row was claimed (PENDING -> SENDING) by a worker. Used to detect
+  // and recover claims orphaned by a killed worker. NULL unless currently claimed.
+  claimedAt     DateTime?
+  // Number of send attempts that ended in a *transient* failure (timeout / 429 /
+  // 5xx). Bounded by MAX_ATTEMPTS so a permanently-flaky recipient eventually
+  // becomes FAILED instead of looping forever.
+  attempts      Int             @default(0)
   sentAt        DateTime?
   deliveredAt   DateTime?
   readAt        DateTime?
@@ -668,6 +675,7 @@ model BroadcastRecipient {
   broadcast     Broadcast       @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
 
   @@index([broadcastId, status])
+  @@index([status, claimedAt])
   @@map("broadcast_recipients")
 }
 
