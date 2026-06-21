@@ -16,7 +16,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
 
-type UserItem = { id: string; name: string | null; email: string | null; image: string | null; role: string };
+type UserItem = { id: string; name: string | null; email: string | null; image: string | null; role: string; isDefaultCaseReceiver?: boolean };
 
 export default function UsersSettingsPage() {
   const [users, setUsers] = useState<UserItem[]>([]);
@@ -74,6 +74,23 @@ export default function UsersSettingsPage() {
     }
     await load();
     toast.success("Role updated.");
+  }
+
+  // Make a user the default case receiver (pass null to clear). New incoming
+  // cases with no explicit assignee are auto-assigned to this person.
+  async function setDefaultReceiver(userId: string | null) {
+    const response = await fetch("/api/users/default-receiver", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ userId }),
+    });
+    if (!response.ok) {
+      const json = (await response.json()) as { error: string | null };
+      toast.error(json.error ?? "Failed to update default receiver");
+      return;
+    }
+    await load();
+    toast.success(userId ? "Default case receiver updated." : "Default case receiver cleared.");
   }
 
   function openEditModal(user: UserItem) {
@@ -167,9 +184,9 @@ export default function UsersSettingsPage() {
       </Dialog>
       <div className="space-y-2">
         {users.map((user) => (
-          <div key={user.id} className="flex items-center justify-between rounded-md border p-3 text-sm">
-            <div className="flex items-center gap-3">
-              <Avatar>
+          <div key={user.id} className="flex flex-col gap-3 rounded-md border p-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-3">
+              <Avatar className="shrink-0">
                 <AvatarImage src={user.image ?? undefined} alt={user.name ?? "User"} />
                 <AvatarFallback>
                   {(user.name ?? user.email ?? "U")
@@ -180,14 +197,33 @@ export default function UsersSettingsPage() {
                     .toUpperCase()}
                 </AvatarFallback>
               </Avatar>
-              <div>
-                <p className="font-medium">{user.name ?? "Unnamed User"}</p>
-                <p className="text-muted-foreground">
+              <div className="min-w-0">
+                <p className="flex flex-wrap items-center gap-2 font-medium">
+                  <span className="truncate">{user.name ?? "Unnamed User"}</span>
+                  {user.isDefaultCaseReceiver && (
+                    <span className="rounded-full bg-emerald-500/15 px-2 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                      Default case receiver
+                    </span>
+                  )}
+                </p>
+                <p className="truncate text-muted-foreground">
                   {user.email ?? "No email"} - {user.role}
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 sm:shrink-0 sm:justify-end">
+              <Button
+                variant={user.isDefaultCaseReceiver ? "default" : "outline"}
+                size="sm"
+                onClick={() => void setDefaultReceiver(user.isDefaultCaseReceiver ? null : user.id)}
+                title={
+                  user.isDefaultCaseReceiver
+                    ? "New cases auto-assign to this user. Click to clear."
+                    : "Make this user the default receiver for new cases"
+                }
+              >
+                {user.isDefaultCaseReceiver ? "✓ Default receiver" : "Make default receiver"}
+              </Button>
               <Button variant="outline" size="sm" onClick={() => openEditModal(user)}>
                 <Pencil className="mr-1 h-4 w-4" />
                 Edit

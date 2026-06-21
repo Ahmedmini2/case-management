@@ -125,7 +125,7 @@ export function KanbanBoard({ initial }: { initial: BoardData }) {
     <div>
       <KanbanFilters search={search} onSearchChange={setSearch} />
       <DragDropContext onDragEnd={onDragEnd}>
-        <div className="flex gap-4 overflow-x-auto pb-2">
+        <div className="-mx-4 flex gap-3 overflow-x-auto px-4 pb-2 sm:mx-0 sm:gap-4 sm:px-0 [-webkit-overflow-scrolling:touch]">
           {filteredStages
             .sort((a, b) => a.position - b.position)
             .map((stage, idx, arr) => (

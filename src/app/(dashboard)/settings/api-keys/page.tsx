@@ -101,7 +101,7 @@ export default function ApiKeysPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">API Keys</h1>
+        <h1 className="text-xl font-semibold sm:text-2xl">API Keys</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Generate keys for n8n, Zapier, or any external service that needs to call your API.
           Use the key in the <code className="rounded bg-muted px-1 py-0.5 text-xs">Authorization: Bearer cms_live_…</code> header.
@@ -214,7 +214,7 @@ export default function ApiKeysPage() {
                       </span>
                     )}
                   </div>
-                  <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                     <span className="font-mono">{key.prefix}…</span>
                     <span>·</span>
                     <span>last used {relativeTime(key.lastUsedAt)}</span>

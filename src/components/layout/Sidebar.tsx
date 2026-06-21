@@ -23,9 +23,11 @@ import {
   Type,
   Users,
   Webhook,
+  X,
   Zap,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useMobileNav } from "@/components/layout/MobileNav";
 
 function WhatsAppIcon({ className }: { className?: string }) {
   return (
@@ -122,8 +124,32 @@ function NavItem({
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const { open, setOpen } = useMobileNav();
   const [collapsed, setCollapsed] = useState(false);
+  // SSR/first paint assumes desktop so the static sidebar renders expanded
+  // (matching server output). Flipped on mount + on resize across the lg breakpoint.
+  const [isDesktop, setIsDesktop] = useState(true);
   const [whatsappUnread, setWhatsappUnread] = useState(0);
+  const [casesUnread, setCasesUnread] = useState(0);
+
+  // The "collapsed" (icons-only) treatment only applies to the static desktop
+  // sidebar. The mobile drawer is always full-width and expanded.
+  const isCollapsed = collapsed && isDesktop;
+
+  // Track the lg (1024px) breakpoint that switches between drawer and static.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const apply = () => setIsDesktop(mq.matches);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  // Close the mobile drawer whenever the route changes (a nav item was tapped).
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname, setOpen]);
 
   // Hydrate persisted state. SSR renders expanded; client may flip after mount.
   useEffect(() => {
@@ -142,16 +168,24 @@ export function Sidebar() {
     }
   }, [router]);
 
-  // Poll the total unread-message count for the WhatsApp badge.
+  // Poll the unread badges (WhatsApp messages + new cases) on one interval.
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const res = await fetch("/api/whatsapp/unread-count", { cache: "no-store" });
-        if (!res.ok) return;
-        const json = (await res.json()) as { data?: { total: number } | null };
-        if (!cancelled) setWhatsappUnread(json.data?.total ?? 0);
-      } catch { /* offline or signed out — leave the count as-is */ }
+        const [wa, cs] = await Promise.all([
+          fetch("/api/whatsapp/unread-count", { cache: "no-store" }),
+          fetch("/api/cases/unread-count", { cache: "no-store" }),
+        ]);
+        if (wa.ok) {
+          const json = (await wa.json()) as { data?: { total: number } | null };
+          if (!cancelled) setWhatsappUnread(json.data?.total ?? 0);
+        }
+        if (cs.ok) {
+          const json = (await cs.json()) as { data?: { total: number } | null };
+          if (!cancelled) setCasesUnread(json.data?.total ?? 0);
+        }
+      } catch { /* offline or signed out — leave the counts as-is */ }
     }
     void load();
     const id = setInterval(load, 15000);
@@ -161,86 +195,112 @@ export function Sidebar() {
   // (settings active state is computed inline where needed)
 
   return (
-    <aside
-      className={cn(
-        "flex shrink-0 flex-col border-r bg-sidebar transition-[width] duration-200 ease-out",
-        collapsed ? "w-14" : "w-64",
-      )}
-    >
-      {/* Logo / Brand */}
-      <div className={cn("flex h-16 items-center border-b border-sidebar-border", collapsed ? "justify-center px-2" : "gap-3 px-5")}>
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-[#df5641] shadow-sm">
-          <span className="text-sm font-black text-white leading-none">D</span>
-        </div>
-        {!collapsed && (
-          <div className="min-w-0">
-            <p className="text-sm font-bold tracking-widest uppercase text-sidebar-foreground">The Dungeon</p>
-            <p className="text-[10px] text-sidebar-foreground/40 uppercase tracking-widest">Support Hub</p>
-          </div>
-        )}
-      </div>
-
-      {/* Collapse toggle */}
-      <button
-        type="button"
-        onClick={() => setCollapsed((v) => !v)}
-        title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+    <>
+      {/* Mobile backdrop — taps close the drawer */}
+      <div
+        onClick={() => setOpen(false)}
+        aria-hidden
         className={cn(
-          "mx-2 mt-2 flex h-8 items-center gap-2 rounded-md text-xs font-medium text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors",
-          collapsed ? "justify-center px-0" : "justify-start px-2",
+          "fixed inset-0 z-40 bg-black/50 transition-opacity lg:hidden",
+          open ? "opacity-100" : "pointer-events-none opacity-0",
+        )}
+      />
+
+      <aside
+        className={cn(
+          // Mobile (< lg): off-canvas drawer sliding in over the content.
+          "fixed inset-y-0 left-0 z-50 flex h-screen w-64 shrink-0 flex-col border-r bg-sidebar transition-transform duration-200 ease-out",
+          // Desktop (lg+): static, sticky, width-collapsible.
+          "lg:sticky lg:top-0 lg:z-40 lg:translate-x-0 lg:transition-[width]",
+          isCollapsed ? "lg:w-14" : "lg:w-64",
+          open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-        {!collapsed && <span>Collapse</span>}
-      </button>
-
-      {/* Scrollable nav */}
-      <nav className={cn("flex-1 overflow-y-auto py-4 space-y-5", collapsed ? "px-2" : "px-3")}>
-        {/* Core section */}
-        <div>
-          {!collapsed && (
-            <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
-              Menu
-            </p>
-          )}
-          <div className="space-y-0.5">
-            {coreItems.map((item) => {
-              const active =
-                item.href === "/reports"
-                  ? pathname === "/" || pathname === "/reports"
-                  : pathname === item.href || pathname.startsWith(`${item.href}/`);
-              const badge = item.href === "/whatsapp" ? whatsappUnread : undefined;
-              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} badge={badge} />;
-            })}
+        {/* Logo / Brand */}
+        <div className={cn("flex h-16 items-center border-b border-sidebar-border", isCollapsed ? "justify-center px-2" : "gap-3 px-5")}>
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-[#df5641] shadow-sm">
+            <span className="text-sm font-black text-white leading-none">D</span>
           </div>
-        </div>
-
-        {/* Divider */}
-        <div className="border-t border-sidebar-border" />
-
-        {/* Settings section */}
-        <div>
-          {!collapsed && (
-            <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
-              Settings
-            </p>
+          {!isCollapsed && (
+            <div className="min-w-0">
+              <p className="text-sm font-bold tracking-widest uppercase text-sidebar-foreground">The Dungeon</p>
+              <p className="text-[10px] text-sidebar-foreground/40 uppercase tracking-widest">Support Hub</p>
+            </div>
           )}
-          <div className="space-y-0.5">
-            {settingsItems.map((item) => {
-              const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
-              return <NavItem key={item.href} {...item} active={active} collapsed={collapsed} />;
-            })}
-          </div>
+          {/* Mobile close button */}
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Close navigation menu"
+            className="ml-auto flex h-8 w-8 items-center justify-center rounded-md text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground lg:hidden"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
-      </nav>
 
-      {/* Footer */}
-      {!collapsed && (
-        <div className="border-t border-sidebar-border px-4 py-3">
-          <p className="text-[10px] text-sidebar-foreground/25 text-center">The Dungeon Gear &middot; Dubai</p>
-        </div>
-      )}
-    </aside>
+        {/* Collapse toggle (desktop only) */}
+        <button
+          type="button"
+          onClick={() => setCollapsed((v) => !v)}
+          title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          className={cn(
+            "mx-2 mt-2 hidden h-8 items-center gap-2 rounded-md text-xs font-medium text-sidebar-foreground/60 hover:bg-sidebar-accent hover:text-sidebar-foreground transition-colors lg:flex",
+            isCollapsed ? "justify-center px-0" : "justify-start px-2",
+          )}
+        >
+          {isCollapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
+          {!isCollapsed && <span>Collapse</span>}
+        </button>
+
+        {/* Scrollable nav */}
+        <nav className={cn("flex-1 overflow-y-auto py-4 space-y-5", isCollapsed ? "px-2" : "px-3")}>
+          {/* Core section */}
+          <div>
+            {!isCollapsed && (
+              <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
+                Menu
+              </p>
+            )}
+            <div className="space-y-0.5">
+              {coreItems.map((item) => {
+                const active =
+                  item.href === "/reports"
+                    ? pathname === "/" || pathname === "/reports"
+                    : pathname === item.href || pathname.startsWith(`${item.href}/`);
+                const badge =
+                  item.href === "/whatsapp" ? whatsappUnread : item.href === "/cases" ? casesUnread : undefined;
+                return <NavItem key={item.href} {...item} active={active} collapsed={isCollapsed} badge={badge} />;
+              })}
+            </div>
+          </div>
+
+          {/* Divider */}
+          <div className="border-t border-sidebar-border" />
+
+          {/* Settings section */}
+          <div>
+            {!isCollapsed && (
+              <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-widest text-sidebar-foreground/30">
+                Settings
+              </p>
+            )}
+            <div className="space-y-0.5">
+              {settingsItems.map((item) => {
+                const active = pathname === item.href || pathname.startsWith(`${item.href}/`);
+                return <NavItem key={item.href} {...item} active={active} collapsed={isCollapsed} />;
+              })}
+            </div>
+          </div>
+        </nav>
+
+        {/* Footer */}
+        {!isCollapsed && (
+          <div className="border-t border-sidebar-border px-4 py-3">
+            <p className="text-[10px] text-sidebar-foreground/25 text-center">The Dungeon Gear &middot; Dubai</p>
+          </div>
+        )}
+      </aside>
+    </>
   );
 }

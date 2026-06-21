@@ -23,8 +23,14 @@ model User {
   passwordHash  String?
   role           UserRole  @default(AGENT)
   isActive       Boolean   @default(true)
+  // The single user who automatically receives every new unassigned case.
+  isDefaultCaseReceiver Boolean @default(false)
   timezone       String    @default("UTC")
   fontPreference String?
+  // Baseline for the sidebar "new cases" badge: only cases created after this
+  // (and not yet opened by the user) are counted. Set to "now" on signup so a
+  // new account doesn't inherit every historical case as unread.
+  casesBadgeSince DateTime  @default(now())
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -39,6 +45,7 @@ model User {
   notifications Notification[]
   attachments   Attachment[]
   watchedCases  CaseWatcher[]
+  caseViews     CaseView[]
 
   @@map("users")
 }
@@ -166,6 +173,7 @@ model Case {
   notifications   Notification[]
   automationRuns  AutomationRun[]
   watchers        CaseWatcher[]
+  views           CaseView[]
 
   @@index([status])
   @@index([priority])
@@ -173,6 +181,21 @@ model Case {
   @@index([createdAt])
   @@index([caseNumber])
   @@map("cases")
+}
+
+// Per-user record that a user has opened/seen a case. Powers the sidebar
+// "new cases" badge: a case counts as unread for a user until a CaseView exists.
+model CaseView {
+  caseId   String
+  userId   String
+  viewedAt DateTime @default(now()) @updatedAt
+
+  case     Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  user     User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([caseId, userId])
+  @@index([userId])
+  @@map("case_views")
 }
 
 enum CaseStatus {
@@ -538,6 +561,10 @@ model WhatsAppConversation {
   lastMessage   String?
   lastMessageAt DateTime   @default(now())
   unreadCount   Int        @default(0)
+  // True for a conversation created purely by a broadcast send that the customer
+  // has never replied to. Such rows are hidden from the chat tabs (they live in
+  // the Broadcast tab) until the first inbound message flips this to false.
+  isBroadcastOnly Boolean  @default(false)
   status        ConvStatus @default(ACTIVE)
   handledBy     HandledBy  @default(AI)
   agentId       String?
@@ -579,12 +606,18 @@ model WhatsAppMessage {
   isAI           Boolean  @default(false)
   status         String   @default("sent")
   isRead         Boolean  @default(false)
+  // Reply context. replyToWamid is the WAMID of the message this one replied to
+  // (Meta's context.id); replyToMessageId is our local resolution of it, used to
+  // render a quoted bubble. Both null for non-reply messages.
+  replyToWamid     String?
+  replyToMessageId String?
   timestamp      DateTime @default(now())
   createdAt      DateTime @default(now())
 
   conversation WhatsAppConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, timestamp])
+  @@index([replyToMessageId])
   @@map("whatsapp_messages")
 }
 
@@ -650,6 +683,7 @@ enum BroadcastStatus {
   COMPLETED
   FAILED
   CANCELLED
+  STOPPED
 }
 
 model BroadcastRecipient {
@@ -657,6 +691,10 @@ model BroadcastRecipient {
   broadcastId   String
   phone         String
   contactName   String?
+  // Per-recipient resolved template variables, e.g. {"1":"Ahmed","2":"VIP"}.
+  // Set when a broadcast maps {{n}} to an uploaded CSV column; null falls back
+  // to the broadcast's global templateVars at send time.
+  vars          Json?
   status        RecipientStatus @default(PENDING)
   whatsappMsgId String?
   error         String?
@@ -681,6 +719,7 @@ model BroadcastRecipient {
 
 enum RecipientStatus {
   PENDING
+  SENDING
   SENT
   DELIVERED
   READ

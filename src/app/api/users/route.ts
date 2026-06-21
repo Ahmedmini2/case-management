@@ -22,7 +22,7 @@ export async function GET() {
   const sb = supabaseAdmin();
   const { data, error } = await sb
     .from("users")
-    .select("id, name, email, image, role")
+    .select("id, name, email, image, role, isDefaultCaseReceiver")
     .eq("isActive", true)
     .order("createdAt", { ascending: true });
 

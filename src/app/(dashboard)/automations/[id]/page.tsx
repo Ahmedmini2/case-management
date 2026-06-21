@@ -39,8 +39,8 @@ export default async function AutomationDetailPage({ params }: { params: Promise
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">{item.name}</h1>
-      <p className="text-sm text-muted-foreground">{item.description ?? "No description"}</p>
+      <h1 className="text-xl font-semibold break-words sm:text-2xl">{item.name}</h1>
+      <p className="text-sm text-muted-foreground break-words">{item.description ?? "No description"}</p>
       <pre className="overflow-auto rounded-md border p-3 text-xs">{JSON.stringify(item.trigger, null, 2)}</pre>
       <pre className="overflow-auto rounded-md border p-3 text-xs">{JSON.stringify(item.actions, null, 2)}</pre>
       <div className="space-y-2">
@@ -50,7 +50,7 @@ export default async function AutomationDetailPage({ params }: { params: Promise
             <p>
               {run.status} - {new Date(run.createdAt).toLocaleString()}
             </p>
-            {run.error ? <p className="text-red-600">{run.error}</p> : null}
+            {run.error ? <p className="text-red-600 break-words">{run.error}</p> : null}
           </div>
         ))}
       </div>

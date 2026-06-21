@@ -30,7 +30,7 @@ export function KanbanColumn({
   onMoveRight: () => void;
 }) {
   return (
-    <div className="w-80 shrink-0">
+    <div className="w-[80vw] max-w-[20rem] shrink-0 sm:w-80">
       {/* Column header */}
       <div className="mb-3 flex items-center justify-between rounded-xl border bg-card px-3.5 py-2.5 shadow-sm">
         <div className="flex items-center gap-2 min-w-0">

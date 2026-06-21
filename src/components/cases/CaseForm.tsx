@@ -137,7 +137,7 @@ export function CaseForm() {
             </div>
           </div>
           {serverError ? <p className="text-sm text-red-600">{serverError}</p> : null}
-          <Button type="submit">Create Case</Button>
+          <Button type="submit" className="w-full sm:w-auto">Create Case</Button>
         </form>
       </CardContent>
     </Card>

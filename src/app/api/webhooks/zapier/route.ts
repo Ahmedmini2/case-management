@@ -7,6 +7,7 @@ import { verifyApiKey } from "@/lib/api-keys";
 import { writeAudit } from "@/lib/audit";
 import { generateCaseNumber } from "@/lib/case-number";
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { getDefaultAssigneeId } from "@/lib/default-assignee";
 
 const zapierSchema = z.object({
   title: z.string().min(3).max(200),
@@ -123,7 +124,7 @@ export async function POST(request: Request) {
       customFields: data.customFields,
       externalId: data.externalId,
       createdById: fallbackOwner.id,
-      assignedToId: assignee?.id ?? null,
+      assignedToId: assignee?.id ?? (await getDefaultAssigneeId()),
       contactId,
       pipelineId: defaultPipeline?.id ?? null,
       pipelineStageId: firstStageId,

@@ -3,6 +3,7 @@ import { after, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { triggerPusherEvent } from "@/lib/pusher";
 import { StorageBuckets, uploadToBucket } from "@/lib/supabase/storage";
+import { normalizePhone } from "@/lib/whatsapp/phone";
 
 // Resolve a WhatsApp media ID into a public Supabase Storage URL.
 // Two-step Meta flow: GET /<id> returns a short-lived signed URL that requires
@@ -176,6 +177,12 @@ export async function POST(request: Request) {
                 await sb
                   .from("broadcasts")
                   .update({
+                    // "Sent" counts everything Meta accepted and didn't fail
+                    // (SENT/DELIVERED/READ) — same definition the chunk sender
+                    // uses — so a webhook flipping a SENT row to FAILED keeps
+                    // sentCount + failedCount consistent instead of stale.
+                    sentCount:
+                      (counts.get("SENT") ?? 0) + (counts.get("DELIVERED") ?? 0) + (counts.get("READ") ?? 0),
                     deliveredCount: (counts.get("DELIVERED") ?? 0) + (counts.get("READ") ?? 0),
                     readCount: counts.get("READ") ?? 0,
                     failedCount: counts.get("FAILED") ?? 0,
@@ -202,6 +209,12 @@ export async function POST(request: Request) {
           let mediaWaId: string | null = null; // WhatsApp media ID (NOT a URL)
           let documentFilename: string | null = null;
 
+          // Reply context: when a customer replies to one of OUR messages, Meta
+          // includes context.id = the WAMID of the message being replied to. We
+          // store it and resolve it to our local message row for the quoted bubble.
+          const msgContext = msg.context as Record<string, unknown> | undefined;
+          const replyToWamid = typeof msgContext?.id === "string" ? msgContext.id : null;
+
           if (msgType === "text") {
             const text = msg.text as Record<string, unknown> | undefined;
             body = typeof text?.body === "string" ? text.body : "";
@@ -214,6 +227,12 @@ export async function POST(request: Request) {
           }
 
           if (!from) continue;
+
+          // Canonical phone identity (`+<digits>`). Meta sends a bare wa_id, so
+          // without this the same person forks a second conversation row vs. the
+          // `+`-prefixed value the app stores everywhere else. `from` stays raw
+          // because it must match Meta's `wa_id` in the contacts array below.
+          const phone = normalizePhone(from);
 
           // Get contact name from webhook payload
           const contactEntry = (contacts as Record<string, unknown>[]).find(
@@ -229,7 +248,7 @@ export async function POST(request: Request) {
           const { data: existingConv } = await sb
             .from("whatsapp_conversations")
             .select("id, unreadCount, handledBy")
-            .eq("contactPhone", from)
+            .eq("contactPhone", phone)
             .maybeSingle();
 
           let conversationId: string;
@@ -239,22 +258,32 @@ export async function POST(request: Request) {
             const ec = existingConv as { id: string; unreadCount: number | null; handledBy: string | null };
             conversationId = ec.id;
             handledBy = ec.handledBy;
-            const { error: updErr } = await sb
+            const updatePayload = {
+              contactName,
+              lastMessage: lastMsg,
+              lastMessageAt: tsIso,
+              unreadCount: (ec.unreadCount ?? 0) + 1,
+            };
+            // A reply means this is a real chat now — clear the broadcast-only
+            // flag so it shows in the chat tabs. Retry without the column if the
+            // migration hasn't run yet.
+            let { error: updErr } = await sb
               .from("whatsapp_conversations")
-              .update({
-                contactName,
-                lastMessage: lastMsg,
-                lastMessageAt: tsIso,
-                unreadCount: (ec.unreadCount ?? 0) + 1,
-              })
+              .update({ ...updatePayload, isBroadcastOnly: false })
               .eq("id", ec.id);
+            if (updErr && /isBroadcastOnly/i.test(updErr.message)) {
+              ({ error: updErr } = await sb
+                .from("whatsapp_conversations")
+                .update(updatePayload)
+                .eq("id", ec.id));
+            }
             if (updErr) console.error("[WhatsApp Webhook] Conv update failed:", updErr.message);
           } else {
             const { data: newConv, error: insErr } = await sb
               .from("whatsapp_conversations")
               .insert({
                 contactName,
-                contactPhone: from,
+                contactPhone: phone,
                 lastMessage: lastMsg,
                 lastMessageAt: tsIso,
                 unreadCount: 1,
@@ -268,6 +297,18 @@ export async function POST(request: Request) {
             const nc = newConv as { id: string; handledBy: string | null };
             conversationId = nc.id;
             handledBy = nc.handledBy;
+          }
+
+          // Resolve the replied-to message (if any) to our local row via its WAMID.
+          // whatsappMsgId is UNIQUE, so context.id maps to at most one message.
+          let replyToMessageId: string | null = null;
+          if (replyToWamid) {
+            const { data: refMsg } = await sb
+              .from("whatsapp_messages")
+              .select("id")
+              .eq("whatsappMsgId", replyToWamid)
+              .maybeSingle();
+            replyToMessageId = refMsg ? (refMsg as { id: string }).id : null;
           }
 
           // Save inbound message FIRST (without mediaUrl), so the chat shows it immediately.
@@ -286,6 +327,8 @@ export async function POST(request: Request) {
               isAI: false,
               status: "delivered",
               timestamp: tsIso,
+              replyToWamid,
+              replyToMessageId,
             })
             .select("id")
             .single();
@@ -320,7 +363,7 @@ export async function POST(request: Request) {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
                 conversationId,
-                contactPhone: from,
+                contactPhone: phone,
                 contactName,
                 messageId: msgId,
                 body,

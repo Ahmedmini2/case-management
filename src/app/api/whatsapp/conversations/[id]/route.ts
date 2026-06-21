@@ -71,7 +71,9 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
     data.handledBy = newHandledBy;
 
     if (newHandledBy === "HUMAN" && conv.handledBy === "AI") {
-      data.agentId = session.user.id;
+      // Default the owner to the actor only on a plain take-over. If the caller
+      // explicitly named an agent (the "Assign Agent" dropdown), keep that choice.
+      if (body.agentId === undefined) data.agentId = session.user.id;
 
       if (conv.caseId) {
         await sb.from("activities").insert({

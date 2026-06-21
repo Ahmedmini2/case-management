@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 /* ------------------------------------------------------------------ */
 /*  DATA                                                               */
@@ -121,6 +122,7 @@ const COLOR = {
 type View = "home" | "form" | "success";
 
 export default function PortalPage() {
+  const isMobile = useIsMobile();
   const [view, setView] = useState<View>("home");
   const [expandedCategory, setExpandedCategory] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -219,7 +221,9 @@ export default function PortalPage() {
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            padding: "20px 32px",
+            flexWrap: "wrap",
+            gap: 12,
+            padding: isMobile ? "16px 20px" : "20px 32px",
             borderBottom: `1px solid ${COLOR.border}`,
           }}
         >
@@ -259,18 +263,18 @@ export default function PortalPage() {
         </header>
 
         {/* ============ MAIN CONTENT ============ */}
-        <main style={{ flex: 1, maxWidth: 960, width: "100%", margin: "0 auto", padding: "0 24px" }}>
+        <main style={{ flex: 1, maxWidth: 960, width: "100%", margin: "0 auto", padding: isMobile ? "0 16px" : "0 24px" }}>
 
           {/* ---------- HOME VIEW ---------- */}
           {view === "home" && (
             <div>
               {/* Hero */}
-              <section style={{ textAlign: "center", padding: "64px 0 48px" }}>
+              <section style={{ textAlign: "center", padding: isMobile ? "40px 0 32px" : "64px 0 48px" }}>
                 <h1
                   style={{
                     fontFamily: FONT_HEADING,
                     fontWeight: 700,
-                    fontSize: 48,
+                    fontSize: isMobile ? 32 : 48,
                     textTransform: "uppercase",
                     letterSpacing: 2,
                     lineHeight: 1.1,
@@ -444,7 +448,7 @@ export default function PortalPage() {
                 <section
                   style={{
                     display: "grid",
-                    gridTemplateColumns: "repeat(3, 1fr)",
+                    gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)",
                     gap: 16,
                   }}
                 >
@@ -625,7 +629,7 @@ export default function PortalPage() {
                 style={{
                   fontFamily: FONT_HEADING,
                   fontWeight: 700,
-                  fontSize: 28,
+                  fontSize: isMobile ? 24 : 28,
                   textTransform: "uppercase",
                   letterSpacing: 2,
                   marginTop: 0,
@@ -637,7 +641,7 @@ export default function PortalPage() {
 
               <form onSubmit={(e) => void handleSubmit(e)} style={{ display: "flex", flexDirection: "column", gap: 20 }}>
                 {/* Row: Name + Email */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
                   <div>
                     <label style={{ display: "block", fontSize: 12, color: COLOR.muted, marginBottom: 6, fontFamily: FONT_HEADING, textTransform: "uppercase", letterSpacing: 1 }}>
                       Full Name
@@ -671,7 +675,7 @@ export default function PortalPage() {
                 </div>
 
                 {/* Row: Order Number + Case Type */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 16 }}>
                   <div>
                     <label style={{ display: "block", fontSize: 12, color: COLOR.muted, marginBottom: 6, fontFamily: FONT_HEADING, textTransform: "uppercase", letterSpacing: 1 }}>
                       Order Number
@@ -860,7 +864,7 @@ export default function PortalPage() {
                 style={{
                   fontFamily: FONT_HEADING,
                   fontWeight: 700,
-                  fontSize: 36,
+                  fontSize: isMobile ? 28 : 36,
                   textTransform: "uppercase",
                   letterSpacing: 2,
                   margin: "0 0 12px",
@@ -877,7 +881,8 @@ export default function PortalPage() {
               {/* Case number box */}
               <div
                 style={{
-                  padding: "20px 40px",
+                  maxWidth: "100%",
+                  padding: isMobile ? "18px 24px" : "20px 40px",
                   backgroundColor: COLOR.card,
                   border: `1px solid ${COLOR.border}`,
                   borderRadius: 3,
@@ -891,9 +896,10 @@ export default function PortalPage() {
                   style={{
                     fontFamily: FONT_HEADING,
                     fontWeight: 700,
-                    fontSize: 32,
+                    fontSize: isMobile ? 26 : 32,
                     letterSpacing: 3,
                     color: COLOR.white,
+                    wordBreak: "break-word",
                   }}
                 >
                   {successCase}
@@ -901,7 +907,7 @@ export default function PortalPage() {
               </div>
 
               {/* Buttons */}
-              <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", justifyContent: "center", gap: 12 }}>
                 <button
                   onClick={() => { setView("home"); window.scrollTo(0, 0); }}
                   style={{
@@ -956,7 +962,7 @@ export default function PortalPage() {
         <footer
           style={{
             borderTop: `1px solid ${COLOR.border}`,
-            padding: "24px 32px",
+            padding: isMobile ? "20px 16px" : "24px 32px",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
@@ -967,7 +973,7 @@ export default function PortalPage() {
           <span style={{ color: COLOR.muted, fontSize: 12 }}>
             &copy; The Dungeon Gear &middot; Dubai, UAE
           </span>
-          <div style={{ display: "flex", gap: 20 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: isMobile ? 14 : 20 }}>
             {[
               { label: "Shipping Policy", href: "https://thedungeonmerch.com/policies/shipping-policy" },
               { label: "Refund Policy", href: "https://thedungeonmerch.com/policies/refund-policy" },

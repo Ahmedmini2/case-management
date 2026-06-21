@@ -40,7 +40,37 @@ export async function GET(_: Request, { params }: { params: Promise<{ id: string
     .order("timestamp", { ascending: true });
 
   if (msgErr) return NextResponse.json(fail(msgErr.message), { status: 500 });
-  return NextResponse.json(ok(messages ?? []));
+
+  type MsgRow = {
+    id: string;
+    body: string;
+    sender: string;
+    senderName: string;
+    mediaType: string | null;
+    replyToMessageId: string | null;
+  } & Record<string, unknown>;
+  const rows = (messages ?? []) as MsgRow[];
+
+  // Enrich each reply with a snippet of the message it replied to, so the UI can
+  // render a WhatsApp-style quoted bubble without a second round-trip per message.
+  const refIds = [...new Set(rows.map((m) => m.replyToMessageId).filter(Boolean))] as string[];
+  if (refIds.length > 0) {
+    const { data: refs } = await sb
+      .from("whatsapp_messages")
+      .select("id, body, sender, senderName, mediaType")
+      .in("id", refIds);
+    const refMap = new Map<string, { body: string; sender: string; senderName: string; mediaType: string | null }>();
+    for (const r of (refs ?? []) as { id: string; body: string; sender: string; senderName: string; mediaType: string | null }[]) {
+      refMap.set(r.id, { body: r.body, sender: r.sender, senderName: r.senderName, mediaType: r.mediaType });
+    }
+    const enriched = rows.map((m) => ({
+      ...m,
+      replyTo: m.replyToMessageId ? refMap.get(m.replyToMessageId) ?? null : null,
+    }));
+    return NextResponse.json(ok(enriched));
+  }
+
+  return NextResponse.json(ok(rows));
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -71,6 +101,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   // Send via WhatsApp Business API
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
   const token = process.env.WHATSAPP_TOKEN;
+  let waMsgId: string | null = null;
 
   if (phoneNumberId && token) {
     try {
@@ -94,6 +125,11 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (!waRes.ok) {
         const errData = await waRes.text();
         console.error("[WhatsApp API] Send failed:", errData);
+      } else {
+        // Capture the WAMID so delivery/read webhooks and customer tap-to-reply
+        // (context.id) can resolve back to this message.
+        const data = (await waRes.json()) as { messages?: { id: string }[] };
+        waMsgId = data.messages?.[0]?.id ?? null;
       }
     } catch (err) {
       console.error("[WhatsApp API] Network error:", err);
@@ -116,6 +152,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     .from("whatsapp_messages")
     .insert({
       conversationId: id,
+      whatsappMsgId: waMsgId,
       direction: "outbound",
       sender: "agent",
       senderName,

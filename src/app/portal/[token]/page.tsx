@@ -57,14 +57,14 @@ export default function PortalTrackPage({ params }: { params: Promise<{ token: s
   }
 
   if (!item) {
-    return <div className="p-6 text-sm text-muted-foreground">{message || "Loading..."}</div>;
+    return <div className="p-4 text-sm text-muted-foreground sm:p-6">{message || "Loading..."}</div>;
   }
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4 p-6">
+    <div className="mx-auto max-w-3xl space-y-4 p-4 sm:p-6">
       <Card>
         <CardHeader>
-          <CardTitle>
+          <CardTitle className="break-words">
             {item.caseNumber} - {item.title}
           </CardTitle>
         </CardHeader>

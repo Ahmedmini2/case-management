@@ -43,7 +43,7 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ pipel
   return (
     <div className="space-y-6">
       <div className="space-y-2">
-        <h1 className="text-2xl font-semibold">Pipeline Settings</h1>
+        <h1 className="text-xl font-semibold sm:text-2xl">Pipeline Settings</h1>
         <p className="text-sm text-muted-foreground">Manage pipeline name and stages.</p>
       </div>
       <div className="max-w-md space-y-2">
@@ -56,7 +56,7 @@ export default function PipelineDetailPage({ params }: { params: Promise<{ pipel
       <div className="space-y-2">
         <h2 className="font-medium">Stages</h2>
         {pipeline.stages.map((stage) => (
-          <div key={stage.id} className="rounded-md border p-3 text-sm">
+          <div key={stage.id} className="rounded-md border p-3 text-sm break-words">
             <span className="font-medium">{stage.name}</span> - <span className="text-muted-foreground">{stage.color}</span>
           </div>
         ))}

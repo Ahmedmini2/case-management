@@ -13,6 +13,7 @@
 // Neither uses cross-function fire-and-forget (Vercel would kill it).
 
 import { supabaseAdmin } from "@/lib/supabase/admin";
+import { normalizePhone } from "@/lib/whatsapp/phone";
 
 /* ----------------------------- Tunables ---------------------------------- */
 
@@ -94,6 +95,9 @@ type Claimed = {
   phone: string;
   contactName: string | null;
   attempts: number | null;
+  // Per-recipient resolved template variables (overlaid on the broadcast's
+  // global templateVars). Null for non-personalized / legacy broadcasts.
+  vars: Record<string, string> | null;
   // The exact claim timestamp this worker stamped (as returned by Postgres).
   // Every terminal write matches on it so a worker can only mutate a row it
   // still owns — even if a stale-recovery worker reclaimed it in between.
@@ -112,7 +116,8 @@ type SendCtx = {
   phoneNumberId: string;
   token: string;
   template: Tpl;
-  components: Record<string, unknown>[];
+  // Broadcast-wide variable values; per-recipient vars are overlaid at send time.
+  globalVars: Record<string, string>;
   broadcastMessage: string;
 };
 
@@ -202,7 +207,7 @@ export async function processBroadcastChunk(
     phoneNumberId,
     token,
     template,
-    components: buildComponents(template, broadcast.templateVars ?? {}),
+    globalVars: broadcast.templateVars ?? {},
     broadcastMessage: broadcast.message,
   };
   const deadline = Date.now() + SEND_BUDGET_MS;
@@ -285,7 +290,7 @@ async function claimBatch(broadcastId: string, size: number): Promise<Claimed[]>
     .update({ status: "SENDING", claimedAt: new Date().toISOString() })
     .in("id", ids)
     .eq("status", "PENDING")
-    .select("id, phone, contactName, attempts, claimedAt");
+    .select("id, phone, contactName, attempts, vars, claimedAt");
 
   return (claimed ?? []) as Claimed[];
 }
@@ -337,6 +342,9 @@ async function sendOne(
   ctx: SendCtx,
   r: Claimed,
 ): Promise<SendOutcome> {
+  // Build components per recipient: the broadcast's global vars overlaid with
+  // this recipient's personalized values (from a mapped CSV column).
+  const components = buildComponents(ctx.template, { ...ctx.globalVars, ...(r.vars ?? {}) });
   const payload: Record<string, unknown> = {
     messaging_product: "whatsapp",
     to: r.phone,
@@ -344,7 +352,7 @@ async function sendOne(
     template: {
       name: ctx.template.name,
       language: { code: ctx.template.language },
-      ...(ctx.components.length > 0 ? { components: ctx.components } : {}),
+      ...(components.length > 0 ? { components } : {}),
     },
   };
 
@@ -392,7 +400,15 @@ async function sendOne(
     if (!updated || (updated as unknown[]).length === 0) return "skip";
 
     try {
-      await mirrorToChat(r.phone, r.contactName, ctx.broadcastMessage, waMsgId);
+      // Personalize the mirrored chat body with this recipient's vars so the
+      // internal chat shows the real text, not leftover {{n}} placeholders.
+      let mirrorBody = ctx.broadcastMessage;
+      if (r.vars) {
+        for (const [k, v] of Object.entries(r.vars)) {
+          mirrorBody = mirrorBody.replaceAll(`{{${k}}}`, v);
+        }
+      }
+      await mirrorToChat(r.phone, r.contactName, mirrorBody, waMsgId);
     } catch (chatErr) {
       console.error("[Broadcast] mirror-to-chat failed:", chatErr);
     }
@@ -572,18 +588,41 @@ async function mirrorToChat(
   const lastMessage = body.length > 200 ? body.slice(0, 200) + "..." : body;
   const nowIso = new Date().toISOString();
 
-  // Upsert by the unique contactPhone — avoids the select-then-insert race that
-  // would throw a duplicate-key error under concurrency.
-  const { data: conv } = await sb
-    .from("whatsapp_conversations")
-    .upsert(
-      { contactName: contactName ?? phone, contactPhone: phone, lastMessage, lastMessageAt: nowIso },
-      { onConflict: "contactPhone" },
-    )
-    .select("id")
-    .single();
+  // Canonicalize so the mirrored chat lands on the same row the webhook uses
+  // when this recipient later replies (otherwise "+971…" vs "971…" fork).
+  const canonicalPhone = normalizePhone(phone) || phone;
 
-  const conversationId = conv ? (conv as { id: string }).id : null;
+  // Find-or-create by the unique contactPhone. A NEWLY created row is marked
+  // isBroadcastOnly so it stays out of the chat tabs until the customer replies;
+  // an EXISTING (real) chat is only touched for its last-message preview, never
+  // re-flagged. (Broadcast recipients are deduped per send, so there's no
+  // same-phone concurrency within a broadcast to race here.)
+  const { data: existing } = await sb
+    .from("whatsapp_conversations")
+    .select("id")
+    .eq("contactPhone", canonicalPhone)
+    .maybeSingle();
+
+  let conversationId: string | null = null;
+  if (existing) {
+    conversationId = (existing as { id: string }).id;
+    await sb
+      .from("whatsapp_conversations")
+      .update({ lastMessage, lastMessageAt: nowIso })
+      .eq("id", conversationId);
+  } else {
+    const baseRow = { contactName: contactName ?? canonicalPhone, contactPhone: canonicalPhone, lastMessage, lastMessageAt: nowIso };
+    let ins = await sb
+      .from("whatsapp_conversations")
+      .insert({ ...baseRow, isBroadcastOnly: true })
+      .select("id")
+      .single();
+    // Graceful fallback if the isBroadcastOnly column isn't migrated yet.
+    if (ins.error && /isBroadcastOnly/i.test(ins.error.message)) {
+      ins = await sb.from("whatsapp_conversations").insert(baseRow).select("id").single();
+    }
+    conversationId = ins.data ? (ins.data as { id: string }).id : null;
+  }
   if (conversationId) {
     await sb.from("whatsapp_messages").insert({
       conversationId,

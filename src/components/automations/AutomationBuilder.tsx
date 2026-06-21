@@ -52,7 +52,7 @@ export function AutomationBuilder() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-3">
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       <Card>
         <CardHeader>
           <CardTitle>Trigger</CardTitle>
@@ -81,7 +81,7 @@ export function AutomationBuilder() {
         </CardContent>
       </Card>
 
-      <Card className="lg:col-span-3">
+      <Card className="sm:col-span-2 lg:col-span-3">
         <CardHeader>
           <CardTitle>Create and Test</CardTitle>
         </CardHeader>
@@ -90,14 +90,15 @@ export function AutomationBuilder() {
             <Label>Automation name</Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Auto-prioritize urgent cases" />
           </div>
-          <div className="flex gap-2">
-            <Button onClick={createAutomation}>Save Automation</Button>
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+            <Button onClick={createAutomation} className="w-full sm:w-auto">Save Automation</Button>
             <Input
               value={targetCaseId}
               onChange={(e) => setTargetCaseId(e.target.value)}
               placeholder="Case ID for dry run"
+              className="w-full sm:flex-1"
             />
-            <Button variant="outline" onClick={dryRun}>
+            <Button variant="outline" onClick={dryRun} className="w-full sm:w-auto">
               Dry Run
             </Button>
           </div>

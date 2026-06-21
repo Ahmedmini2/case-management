@@ -41,7 +41,7 @@ export default function NewPipelinePage() {
 
   return (
     <div className="max-w-md space-y-4">
-      <h1 className="text-2xl font-semibold">Create Pipeline</h1>
+      <h1 className="text-xl font-semibold sm:text-2xl">Create Pipeline</h1>
       <form onSubmit={onSubmit} className="space-y-4">
         <div className="space-y-2">
           <Label htmlFor="name">Pipeline name</Label>

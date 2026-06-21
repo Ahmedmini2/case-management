@@ -14,8 +14,8 @@ export function CaseTimeline({ items }: { items: ActivityItem[] }) {
     <div className="space-y-3">
       {items.map((item) => (
         <div key={item.id} className="rounded-md border p-3">
-          <p className="text-sm font-medium">{item.description}</p>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-sm font-medium break-words">{item.description}</p>
+          <p className="text-xs text-muted-foreground break-words">
             {item.user?.name ?? "System"} - {new Date(item.createdAt).toLocaleString()}
           </p>
         </div>

@@ -13,7 +13,7 @@ async function getCases() {
       "id, caseNumber, title, status, priority, source, createdAt, dueDate, assignedToId",
     )
     .order("createdAt", { ascending: false })
-    .limit(50);
+    .limit(500);
 
   const cases = (rowsRaw ?? []) as {
     id: string;
@@ -89,27 +89,27 @@ export default async function CasesPage() {
   return (
     <div className="space-y-5">
       {/* Page header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
             <LayoutList className="h-5 w-5 text-primary" />
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className="text-xl font-bold tracking-tight">Cases</h1>
             <p className="text-xs text-muted-foreground">{cases.length} cases · sorted by newest</p>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-1 items-center gap-2 sm:flex-none">
           <Link
             href="/api/export/cases"
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors sm:flex-none"
           >
             <Download className="h-3.5 w-3.5" />
             Export
           </Link>
           <Link
             href="/cases/new"
-            className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors"
+            className="inline-flex flex-1 items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors sm:flex-none"
           >
             <Plus className="h-4 w-4" />
             New Case

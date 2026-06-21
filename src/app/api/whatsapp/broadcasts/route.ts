@@ -50,7 +50,7 @@ export async function POST(request: Request) {
     name?: string;
     templateId?: string;
     templateVars?: Record<string, string>;
-    recipients?: { phone: string; contactName?: string }[];
+    recipients?: { phone: string; contactName?: string; vars?: Record<string, string> }[];
     scheduledAt?: string | null;
   };
 
@@ -106,6 +106,7 @@ export async function POST(request: Request) {
     .map((r) => ({
       phone: (typeof r.phone === "string" ? r.phone : "").replace(/[^+\d]/g, ""),
       contactName: typeof r.contactName === "string" ? r.contactName.trim() : null,
+      vars: r.vars && typeof r.vars === "object" ? r.vars : null,
     }))
     .filter((r) => {
       if (r.phone.length < 7) return false;
@@ -150,6 +151,7 @@ export async function POST(request: Request) {
           broadcastId,
           phone: r.phone,
           contactName: r.contactName,
+          vars: r.vars,
         })),
       )
       .select("id");

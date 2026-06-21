@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { triggerPusherEvent } from "@/lib/pusher";
+import { normalizePhone } from "@/lib/whatsapp/phone";
 
 // Called by the AI agent (n8n) to send a reply through our system
 // This saves the message to DB AND sends it via WhatsApp API
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
       const { data } = await sb
         .from("whatsapp_conversations")
         .select("id, contactPhone, handledBy")
-        .eq("contactPhone", body.contactPhone)
+        .eq("contactPhone", normalizePhone(body.contactPhone))
         .maybeSingle();
       conversation = (data as Conv | null) ?? null;
     }

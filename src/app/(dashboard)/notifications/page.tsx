@@ -32,14 +32,14 @@ export default function NotificationsPage() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Notifications</h1>
+      <h1 className="text-xl font-semibold sm:text-2xl">Notifications</h1>
       {items.map((item) => (
         <div key={item.id} className="rounded-md border p-4">
-          <p className="font-medium">{item.title}</p>
-          {item.body ? <p className="mt-1 text-sm text-muted-foreground">{item.body}</p> : null}
+          <p className="font-medium break-words">{item.title}</p>
+          {item.body ? <p className="mt-1 text-sm text-muted-foreground break-words">{item.body}</p> : null}
           <p className="mt-1 text-xs text-muted-foreground">{new Date(item.createdAt).toLocaleString()}</p>
           {!item.isRead ? (
-            <Button className="mt-2" variant="outline" onClick={() => markRead(item.id)}>
+            <Button className="mt-2 w-full sm:w-auto" variant="outline" onClick={() => markRead(item.id)}>
               Mark Read
             </Button>
           ) : null}

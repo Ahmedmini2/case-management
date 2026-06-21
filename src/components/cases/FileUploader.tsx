@@ -89,7 +89,7 @@ export function FileUploader({ caseId, onUploaded }: { caseId: string; onUploade
       {/* Drop zone */}
       <div
         className={cn(
-          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-6 text-center transition-colors",
+          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-4 text-center transition-colors sm:p-6",
           dragging ? "border-primary bg-primary/5" : "border-border hover:border-primary/50 hover:bg-accent/30",
           uploading && "pointer-events-none opacity-60",
         )}

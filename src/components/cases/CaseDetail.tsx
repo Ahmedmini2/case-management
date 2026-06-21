@@ -128,6 +128,12 @@ export function CaseDetail({
     void loadUsers();
   }, [initialUsers]);
 
+  // Mark this case as read for the current user so it drops out of the sidebar
+  // "new cases" badge (idempotent; the badge clears on its next poll).
+  useEffect(() => {
+    fetch(`/api/cases/${caseId}/view`, { method: "POST" }).catch(() => {});
+  }, [caseId]);
+
   async function assignUser(userId: string) {
     if (!item) return;
     const nextAssignee = userId
@@ -209,15 +215,15 @@ export function CaseDetail({
     <div className="space-y-6">
       <Card className="shadow-sm">
         <CardHeader className="pb-3">
-          <div className="flex items-start justify-between gap-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
             <div className="min-w-0">
-              <CardTitle className="text-xl leading-snug">{item.title}</CardTitle>
+              <CardTitle className="text-lg leading-snug break-words sm:text-xl">{item.title}</CardTitle>
               <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                <Hash className="h-3 w-3" />
-                <span className="font-mono">{item.caseNumber}</span>
+                <Hash className="h-3 w-3 shrink-0" />
+                <span className="font-mono break-all">{item.caseNumber}</span>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
               <CaseStatusBadge status={item.status} />
               <CasePriorityBadge priority={item.priority} />
             </div>
@@ -302,14 +308,14 @@ export function CaseDetail({
                 Customer
               </p>
               <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                   <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <span className="text-sm font-medium">{item.contact.name}</span>
+                  <span className="text-sm font-medium break-words">{item.contact.name}</span>
                   {item.contact.company && (
                     <>
                       <span className="text-muted-foreground/40">·</span>
                       <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
-                        <Building2 className="h-3 w-3" />
+                        <Building2 className="h-3 w-3 shrink-0" />
                         {item.contact.company}
                       </span>
                     </>
@@ -321,7 +327,7 @@ export function CaseDetail({
                     className="flex items-center gap-2 text-sm text-primary hover:underline"
                   >
                     <Mail className="h-3.5 w-3.5 shrink-0" />
-                    {item.contact.email}
+                    <span className="truncate">{item.contact.email}</span>
                   </a>
                 )}
                 {item.contact.phone && (
@@ -378,11 +384,11 @@ export function CaseDetail({
       </Card>
 
       <Tabs defaultValue="activity">
-        <TabsList className="h-10 rounded-xl bg-muted/60 p-1">
-          <TabsTrigger value="activity" className="rounded-lg px-4 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm">
+        <TabsList className="h-10 w-full max-w-full justify-start overflow-x-auto rounded-xl bg-muted/60 p-1 sm:w-fit sm:justify-center">
+          <TabsTrigger value="activity" className="shrink-0 rounded-lg px-3 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-4">
             Activity
           </TabsTrigger>
-          <TabsTrigger value="comments" className="rounded-lg px-4 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm">
+          <TabsTrigger value="comments" className="shrink-0 rounded-lg px-3 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-4">
             Comments
             {item.comments.length > 0 && (
               <span className="ml-1.5 rounded-full bg-primary/15 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
@@ -390,16 +396,16 @@ export function CaseDetail({
               </span>
             )}
           </TabsTrigger>
-          <TabsTrigger value="emails" className="rounded-lg px-4 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm">
+          <TabsTrigger value="emails" className="shrink-0 rounded-lg px-3 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-4">
             Emails
           </TabsTrigger>
           {item.contact?.phone && (
-            <TabsTrigger value="whatsapp" className="rounded-lg px-4 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm">
+            <TabsTrigger value="whatsapp" className="shrink-0 rounded-lg px-3 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-4">
               <WhatsAppTabIcon className="mr-1.5 h-3.5 w-3.5" style={{ color: "#25D366" }} />
               WhatsApp
             </TabsTrigger>
           )}
-          <TabsTrigger value="attachments" className="rounded-lg px-4 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm">
+          <TabsTrigger value="attachments" className="shrink-0 rounded-lg px-3 text-sm data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-4">
             <Paperclip className="mr-1.5 h-3.5 w-3.5" />
             Attachments
           </TabsTrigger>

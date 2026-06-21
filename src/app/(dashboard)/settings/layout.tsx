@@ -20,13 +20,13 @@ const tabs = [
 export default function SettingsLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-semibold">Settings</h1>
-      <div className="flex flex-wrap gap-2">
+      <h1 className="text-xl font-semibold sm:text-2xl">Settings</h1>
+      <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0 sm:pb-0">
         {tabs.map((tab) => (
           <Link
             key={tab.href}
             href={tab.href}
-            className={cn("rounded-md border px-3 py-1 text-sm text-muted-foreground hover:bg-accent")}
+            className={cn("shrink-0 whitespace-nowrap rounded-md border px-3 py-1 text-sm text-muted-foreground hover:bg-accent")}
           >
             {tab.label}
           </Link>

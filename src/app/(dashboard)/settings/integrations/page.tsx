@@ -24,7 +24,7 @@ export default function IntegrationsSettingsPage() {
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">Integrations</h1>
+      <h1 className="text-xl font-semibold sm:text-2xl">Integrations</h1>
       <Card>
         <CardHeader>
           <CardTitle>Zapier Webhook</CardTitle>

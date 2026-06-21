@@ -108,7 +108,9 @@ export function NotificationBell() {
             position: "absolute",
             right: 0,
             top: "calc(100% + 8px)",
-            width: 380,
+            // Clamp to the viewport so the panel never overflows on phones
+            // (anchored at the bell's right edge, ~16px from the screen edge).
+            width: "min(380px, calc(100vw - 24px))",
             maxHeight: "70vh",
             display: "flex",
             flexDirection: "column",

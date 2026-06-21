@@ -12,6 +12,7 @@ import { triggerPusherEvent } from "@/lib/pusher";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import { calculateSlaDueDate, enqueueSlaWarning } from "@/lib/sla";
 import { getCaseNotifyRecipients } from "@/lib/notify";
+import { getDefaultAssigneeId } from "@/lib/default-assignee";
 
 // Resolve identity from either a NextAuth session (browser) or an API key Bearer token (n8n/Zapier).
 // Returns the userId to record on the case, plus an optional email for outbound notification.
@@ -357,6 +358,9 @@ export async function POST(request: Request) {
     const caseNumber = await generateCaseNumber();
     const dueDate = await calculateSlaDueDate(parsed.data.priority);
 
+    // No explicit assignee → fall back to the configured default case receiver.
+    const resolvedAssigneeId = parsed.data.assignedToId ?? (await getDefaultAssigneeId());
+
     const { data: created, error: createErr } = await sb
       .from("cases")
       .insert({
@@ -366,7 +370,7 @@ export async function POST(request: Request) {
         priority: parsed.data.priority,
         status: parsed.data.status,
         type: parsed.data.type,
-        assignedToId: parsed.data.assignedToId ?? null,
+        assignedToId: resolvedAssigneeId ?? null,
         teamId: parsed.data.teamId ?? null,
         contactId,
         source: parsed.data.source,
@@ -460,13 +464,13 @@ export async function POST(request: Request) {
           caseUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/cases/${newCase.id}`,
         });
       })().catch((e) => console.error("[POST /api/cases] Email error:", e)),
-      // Notify the assignee directly if one was set at creation time
+      // Notify the assignee directly (explicit OR resolved default receiver).
       (async () => {
-        if (!parsed.data.assignedToId) return;
+        if (!resolvedAssigneeId) return;
         const { data: assignee } = await sb
           .from("users")
           .select("name, email")
-          .eq("id", parsed.data.assignedToId)
+          .eq("id", resolvedAssigneeId)
           .maybeSingle();
         const a = assignee as { name: string | null; email: string } | null;
         if (!a?.email) return;

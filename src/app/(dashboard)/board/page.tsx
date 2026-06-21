@@ -211,19 +211,19 @@ export default async function BoardPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
             <MapIcon className="h-5 w-5 text-primary" />
           </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">{pipeline.name}</h1>
+          <div className="min-w-0">
+            <h1 className="truncate text-lg font-bold tracking-tight sm:text-xl">{pipeline.name}</h1>
             <p className="text-xs text-muted-foreground">
               {pipeline.stages.reduce((s, col) => s + col.cases.length, 0)} cases across {pipeline.stages.length} stages
             </p>
           </div>
         </div>
-        <Link href={`/pipeline/${pipeline.id}`} className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+        <Link href={`/pipeline/${pipeline.id}`} className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors sm:w-auto">
           Manage Pipeline
         </Link>
       </div>

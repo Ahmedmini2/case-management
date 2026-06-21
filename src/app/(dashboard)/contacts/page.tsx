@@ -149,22 +149,23 @@ export default function ContactsPage() {
     <div className="space-y-5">
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10">
             <Users className="h-5 w-5 text-primary" />
           </div>
-          <div>
-            <h1 className="text-xl font-semibold">Contacts</h1>
-            <p className="text-xs text-muted-foreground">
+          <div className="min-w-0">
+            <h1 className="text-lg font-semibold sm:text-xl">Contacts</h1>
+            <p className="truncate text-xs text-muted-foreground">
               {contacts.length} {tab === "all" ? "shown" : "total"} · {tags.length} segment{tags.length !== 1 ? "s" : ""}
             </p>
           </div>
         </div>
         <Dialog open={open} onOpenChange={setOpen}>
           <DialogTrigger asChild>
-            <Button size="sm" className="gap-2">
+            <Button size="sm" className="shrink-0 gap-2">
               <Plus className="h-4 w-4" />
-              Add Contact
+              <span className="hidden sm:inline">Add Contact</span>
+              <span className="sm:hidden">Add</span>
             </Button>
           </DialogTrigger>
           <DialogContent>

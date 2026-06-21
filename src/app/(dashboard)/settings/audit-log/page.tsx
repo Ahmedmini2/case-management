@@ -56,15 +56,22 @@ export default function AuditLogPage() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center gap-2">
-        <Input value={action} onChange={(e) => setAction(e.target.value)} placeholder="Filter by action..." />
-        <Button onClick={load}>Filter</Button>
-        <Button variant="outline" onClick={exportCsv}>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={action}
+          onChange={(e) => setAction(e.target.value)}
+          placeholder="Filter by action..."
+          className="w-full sm:w-auto sm:flex-1"
+        />
+        <Button onClick={load} className="flex-1 sm:flex-none">
+          Filter
+        </Button>
+        <Button variant="outline" onClick={exportCsv} className="flex-1 sm:flex-none">
           Export CSV
         </Button>
       </div>
-      <div className="overflow-auto rounded-md border">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
               <th className="p-2">Timestamp</th>
@@ -85,7 +92,7 @@ export default function AuditLogPage() {
                   {row.resourceId ? ` (${row.resourceId})` : ""}
                 </td>
                 <td className="p-2 text-xs">
-                  <pre className="whitespace-pre-wrap">{JSON.stringify({ before: row.before, after: row.after }, null, 2)}</pre>
+                  <pre className="max-w-xs whitespace-pre-wrap break-words">{JSON.stringify({ before: row.before, after: row.after }, null, 2)}</pre>
                 </td>
               </tr>
             ))}

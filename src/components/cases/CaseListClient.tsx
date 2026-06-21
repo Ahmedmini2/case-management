@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import {
@@ -28,6 +28,7 @@ const STATUS_OPTIONS = [
   "RESOLVED", "CLOSED", "CANCELLED",
 ];
 const PRIORITY_OPTIONS = ["CRITICAL", "HIGH", "MEDIUM", "LOW"];
+const PAGE_SIZE = 20;
 
 type Props = {
   items: CaseListItem[];
@@ -50,15 +51,25 @@ export function CaseListClient({ items }: Props) {
     });
   }, [items, search, statusFilter, priorityFilter]);
 
-  const allSelected = filtered.length > 0 && filtered.every((i) => selected.has(i.id));
+  // Pagination — 20 per page, computed off the filtered set.
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const paged = filtered.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE);
+  // Jump back to page 1 whenever the filtered set changes.
+  useEffect(() => { setPage(1); }, [search, statusFilter, priorityFilter]);
+
+  const allSelected = paged.length > 0 && paged.every((i) => selected.has(i.id));
   const someSelected = selected.size > 0;
 
+  // Toggle selection for the rows visible on the current page.
   function toggleAll() {
-    if (allSelected) {
-      setSelected(new Set());
-    } else {
-      setSelected(new Set(filtered.map((i) => i.id)));
-    }
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (paged.every((i) => next.has(i.id))) paged.forEach((i) => next.delete(i.id));
+      else paged.forEach((i) => next.add(i.id));
+      return next;
+    });
   }
 
   function toggleOne(id: string) {
@@ -122,7 +133,7 @@ export function CaseListClient({ items }: Props) {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 rounded-lg border bg-background px-3 text-sm focus:ring-2 focus:ring-primary/40"
+          className="h-9 min-w-0 flex-1 rounded-lg border bg-background px-3 text-sm focus:ring-2 focus:ring-primary/40 sm:flex-none"
         >
           <option value="">All statuses</option>
           {STATUS_OPTIONS.map((s) => (
@@ -133,7 +144,7 @@ export function CaseListClient({ items }: Props) {
         <select
           value={priorityFilter}
           onChange={(e) => setPriorityFilter(e.target.value)}
-          className="h-9 rounded-lg border bg-background px-3 text-sm focus:ring-2 focus:ring-primary/40"
+          className="h-9 min-w-0 flex-1 rounded-lg border bg-background px-3 text-sm focus:ring-2 focus:ring-primary/40 sm:flex-none"
         >
           <option value="">All priorities</option>
           {PRIORITY_OPTIONS.map((p) => (
@@ -155,12 +166,12 @@ export function CaseListClient({ items }: Props) {
 
       {/* Bulk Actions Bar */}
       {someSelected && (
-        <div className="flex items-center gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-xl border border-primary/20 bg-primary/5 px-4 py-2.5">
           <CheckSquare className="h-4 w-4 text-primary shrink-0" />
           <span className="text-sm font-medium text-primary">
             {selected.size} selected
           </span>
-          <div className="ml-auto flex items-center gap-2">
+          <div className="flex w-full flex-wrap items-center gap-2 sm:ml-auto sm:w-auto">
             {bulkLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
             <Button
               variant="outline"
@@ -192,7 +203,7 @@ export function CaseListClient({ items }: Props) {
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 text-xs text-muted-foreground"
+              className="h-7 text-xs text-muted-foreground sm:ml-0 ml-auto"
               disabled={bulkLoading}
               onClick={() => setSelected(new Set())}
             >
@@ -234,7 +245,7 @@ export function CaseListClient({ items }: Props) {
             <span className="text-xs text-muted-foreground">Select all visible</span>
           </div>
 
-          {filtered.map((item) => (
+          {paged.map((item) => (
             <div key={item.id} className="group flex items-start gap-3">
               <div className="pt-4 pl-1">
                 <Checkbox
@@ -247,10 +258,10 @@ export function CaseListClient({ items }: Props) {
 
               <Link href={`/cases/${item.id}`} className="min-w-0 flex-1 block">
                 <Card className="border transition-all duration-200 hover:-translate-y-px hover:border-primary/30 hover:shadow-md hover:shadow-primary/5">
-                  <CardContent className="py-4 px-5">
-                    <div className="flex items-start gap-4">
+                  <CardContent className="py-4 px-4 sm:px-5">
+                    <div className="flex items-start gap-3 sm:gap-4">
                       <div className="min-w-0 flex-1 space-y-2">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-mono font-medium text-muted-foreground">
                             {item.caseNumber}
                           </span>
@@ -279,25 +290,25 @@ export function CaseListClient({ items }: Props) {
                         <p className="font-semibold leading-snug text-foreground group-hover:text-primary transition-colors truncate">
                           {item.title}
                         </p>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                           {item.assignedTo ? (
-                            <span className="flex items-center gap-1">
-                              <UserCircle2 className="h-3.5 w-3.5" />
-                              {item.assignedTo.name ?? item.assignedTo.email}
+                            <span className="flex min-w-0 items-center gap-1">
+                              <UserCircle2 className="h-3.5 w-3.5 shrink-0" />
+                              <span className="truncate">{item.assignedTo.name ?? item.assignedTo.email}</span>
                             </span>
                           ) : (
                             <span className="flex items-center gap-1 italic opacity-60">
-                              <UserCircle2 className="h-3.5 w-3.5" />
+                              <UserCircle2 className="h-3.5 w-3.5 shrink-0" />
                               Unassigned
                             </span>
                           )}
                           <span className="flex items-center gap-1">
-                            <CalendarDays className="h-3.5 w-3.5" />
+                            <CalendarDays className="h-3.5 w-3.5 shrink-0" />
                             {formatDistanceToNow(new Date(item.createdAt), { addSuffix: true })}
                           </span>
                           {item.dueDate && (
                             <span className="flex items-center gap-1 text-amber-600 dark:text-amber-400">
-                              <CalendarDays className="h-3.5 w-3.5" />
+                              <CalendarDays className="h-3.5 w-3.5 shrink-0" />
                               Due {new Date(item.dueDate).toLocaleDateString("en-GB")}
                             </span>
                           )}
@@ -313,6 +324,54 @@ export function CaseListClient({ items }: Props) {
               </Link>
             </div>
           ))}
+
+          {/* Pagination */}
+          {pageCount > 1 && (
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-3">
+              <span className="text-xs text-muted-foreground">
+                Showing {(currentPage - 1) * PAGE_SIZE + 1}–{Math.min(currentPage * PAGE_SIZE, filtered.length)} of {filtered.length}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2 text-xs"
+                  disabled={currentPage === 1}
+                  onClick={() => setPage(currentPage - 1)}
+                >
+                  Prev
+                </Button>
+                {Array.from({ length: pageCount }, (_, i) => i + 1)
+                  .filter((p) => p === 1 || p === pageCount || Math.abs(p - currentPage) <= 1)
+                  .map((p, idx, arr) => (
+                    <span key={p} className="flex items-center">
+                      {idx > 0 && arr[idx - 1] !== p - 1 && (
+                        <span className="px-1 text-muted-foreground">…</span>
+                      )}
+                      <button
+                        onClick={() => setPage(p)}
+                        className={`h-8 min-w-[2rem] rounded-md px-2 text-xs transition-colors ${
+                          p === currentPage
+                            ? "bg-primary text-primary-foreground"
+                            : "border hover:bg-muted"
+                        }`}
+                      >
+                        {p}
+                      </button>
+                    </span>
+                  ))}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2 text-xs"
+                  disabled={currentPage === pageCount}
+                  onClick={() => setPage(currentPage + 1)}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>

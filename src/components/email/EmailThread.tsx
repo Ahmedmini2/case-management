@@ -125,7 +125,7 @@ export function EmailThread({ caseId }: { caseId: string }) {
                 {/* Body */}
                 {isOpen && (
                   <CardContent className="border-t bg-muted/20 px-4 pb-4 pt-3">
-                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                    <p className="whitespace-pre-wrap break-words text-sm leading-relaxed text-foreground/90">
                       {email.body}
                     </p>
                   </CardContent>

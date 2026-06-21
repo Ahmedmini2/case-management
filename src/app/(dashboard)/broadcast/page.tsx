@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { formatDistanceToNow, format } from "date-fns";
 import { toast } from "sonner";
+import { useIsMobile } from "@/hooks/use-mobile";
 import {
   Send, Upload, Plus, Trash2, Play, XCircle, Clock,
   Loader2, FileSpreadsheet, Users, ArrowLeft, X, Phone, AlertCircle,
@@ -84,17 +85,82 @@ function statusCfg(s: string) {
   }
 }
 
-function parseCSV(text: string): { phone: string; contactName?: string }[] {
-  const lines = text.split(/\r?\n/).filter(Boolean);
-  const results: { phone: string; contactName?: string }[] = [];
-  for (const line of lines) {
-    const parts = line.split(/[,;\t]/).map((s) => s.trim().replace(/^["']|["']$/g, ""));
-    if (!parts[0] || /phone|number|mobile|tel/i.test(parts[0])) continue;
-    const phone = parts[0].replace(/[^+\d]/g, "");
-    if (phone.length < 7) continue;
-    results.push({ phone: phone.startsWith("+") ? phone : `+${phone}`, contactName: parts[1] || undefined });
+type ParsedRecipient = { phone: string; contactName?: string; fields: Record<string, string> };
+
+// Parse a CSV/TSV into recipients. Returns the (non-phone) column headers so the
+// user can map a template variable {{n}} to a column, and a per-row `fields` map
+// keyed by header name so each message can be personalized.
+function parseCSV(text: string): { headers: string[]; rows: ParsedRecipient[] } {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return { headers: [], rows: [] };
+
+  const splitRow = (line: string) =>
+    line.split(/[,;\t]/).map((s) => s.trim().replace(/^["']|["']$/g, ""));
+  const digitsOnly = (s: string) => s.replace(/[^+\d]/g, "").replace(/^\+/, "");
+
+  // The phone can live in ANY column ("Name, Phone" vs "Phone, Name"). Use the
+  // header row to locate it if present; otherwise fall back to picking, per row,
+  // the column that actually looks like a phone number (the most digits).
+  let phoneCol = -1;
+  let nameCol = -1;
+  let dataStart = 0;
+  let headers: string[] = [];
+  const header = splitRow(lines[0]);
+  const headerLike = header.some((c) => /phone|number|mobile|tel|whats|name|e-?mail/i.test(c));
+  if (headerLike) {
+    headers = header.map((h, i) => h || `column ${i + 1}`);
+    header.forEach((c, i) => {
+      if (phoneCol === -1 && /phone|number|mobile|tel|whats/i.test(c)) phoneCol = i;
+      if (nameCol === -1 && /name/i.test(c)) nameCol = i;
+    });
+    dataStart = 1; // skip the header row
   }
-  return results;
+
+  const rows: ParsedRecipient[] = [];
+  for (let i = dataStart; i < lines.length; i++) {
+    const cols = splitRow(lines[i]);
+    if (cols.length === 0) continue;
+
+    let phoneRaw = "";
+    let name: string | undefined;
+    let usedPhoneCol = phoneCol;
+    if (phoneCol >= 0) {
+      phoneRaw = cols[phoneCol] ?? "";
+      name = nameCol >= 0 ? cols[nameCol] : cols.find((_, idx) => idx !== phoneCol);
+    } else {
+      // No usable header — the phone is whichever column has the most digits.
+      let bestIdx = -1;
+      let bestLen = 0;
+      cols.forEach((c, idx) => {
+        const d = digitsOnly(c).length;
+        if (d > bestLen) { bestLen = d; bestIdx = idx; }
+      });
+      if (bestIdx === -1) continue;
+      usedPhoneCol = bestIdx;
+      phoneRaw = cols[bestIdx];
+      name = cols.find((c, idx) => idx !== bestIdx && c.length > 0 && digitsOnly(c).length < 7);
+    }
+
+    let digits = digitsOnly(phoneRaw);
+    if (digits.startsWith("00")) digits = digits.slice(2); // 0097... -> +97...
+    if (digits.length < 7) continue;
+
+    // Per-row field map (header name -> cell), excluding the phone column itself.
+    const fields: Record<string, string> = {};
+    if (headers.length > 0) {
+      headers.forEach((h, idx) => {
+        if (idx === usedPhoneCol) return;
+        const v = cols[idx];
+        if (v != null && v !== "") fields[h] = v;
+      });
+    }
+
+    rows.push({ phone: `+${digits}`, contactName: name?.trim() || undefined, fields });
+  }
+
+  // Columns offered to the variable mapper = headers minus the phone column.
+  const mappableHeaders = headers.filter((_, idx) => idx !== phoneCol);
+  return { headers: mappableHeaders, rows };
 }
 
 function Badge({ status }: { status: string }) {
@@ -384,6 +450,7 @@ type DriveResult = {
 /* ------------------------------------------------------------------ */
 
 export default function BroadcastPage() {
+  const isMobile = useIsMobile();
   const [view, setView] = useState<View>("list");
   const [broadcasts, setBroadcasts] = useState<Broadcast[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -398,7 +465,12 @@ export default function BroadcastPage() {
   const [formName, setFormName] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [templateVars, setTemplateVars] = useState<Record<string, string>>({});
-  const [formRecipients, setFormRecipients] = useState<{ phone: string; contactName?: string }[]>([]);
+  const [formRecipients, setFormRecipients] = useState<{ phone: string; contactName?: string; fields?: Record<string, string> }[]>([]);
+  // Columns from the uploaded CSV, offered as choices for each template variable.
+  const [csvColumns, setCsvColumns] = useState<string[]>([]);
+  // Maps a template variable index ("1","2"…) to a CSV column header, or the
+  // sentinel "__literal__" meaning "use the typed value in templateVars".
+  const [varColumnMap, setVarColumnMap] = useState<Record<string, string>>({});
   const [manualPhone, setManualPhone] = useState("");
   const [manualName, setManualName] = useState("");
   const [creating, setCreating] = useState(false);
@@ -451,6 +523,35 @@ export default function BroadcastPage() {
   const tabIdRef = useRef<string>(Math.random().toString(36).slice(2));
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
+
+  // WhatsApp rejects body params containing newlines or 4+ consecutive spaces.
+  const sanitizeVar = (s: string) => s.replace(/\s+/g, " ").trim();
+
+  // Resolve a variable's value for a given recipient: a CSV-column mapping reads
+  // that recipient's field, falling back to the typed default when that cell is
+  // blank; an unmapped variable always uses the typed value.
+  function resolveVar(key: string, fields?: Record<string, string>): string {
+    const mapping = varColumnMap[key];
+    if (mapping && mapping !== "__literal__") {
+      const fromColumn = sanitizeVar(fields?.[mapping] ?? "");
+      if (fromColumn) return fromColumn;
+    }
+    return sanitizeVar(templateVars[key] ?? "");
+  }
+
+  // Values shown in the live preview — use the first recipient so a column
+  // mapping previews a real value rather than the raw "{{1}}".
+  const previewVars: Record<string, string> = (() => {
+    if (!selectedTemplate || selectedTemplate.variableCount === 0) return templateVars;
+    const sample = formRecipients[0]?.fields;
+    const out: Record<string, string> = {};
+    for (let i = 1; i <= selectedTemplate.variableCount; i++) {
+      const key = String(i);
+      const v = resolveVar(key, sample);
+      out[key] = v || `{{${i}}}`;
+    }
+    return out;
+  })();
 
   /* ---- Loaders ---- */
   const loadBroadcasts = useCallback(async () => {
@@ -723,6 +824,8 @@ export default function BroadcastPage() {
     }
     setSelectedTemplateId(t.id);
     setTemplateVars({});
+    setVarColumnMap({});
+    setCsvColumns([]);
     setFormName("");
     setFormRecipients([]);
     setFormScheduledAt("");
@@ -734,14 +837,31 @@ export default function BroadcastPage() {
 
   function handleFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]; if (!file) return;
+    // Excel files are binary; readAsText would yield garbage. Nudge to CSV.
+    if (/\.(xlsx|xls)$/i.test(file.name)) {
+      toast.error("Please export your sheet as CSV first (File → Save As → CSV), then upload that.");
+      e.target.value = "";
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => {
-      const parsed = parseCSV(ev.target?.result as string);
-      if (parsed.length === 0) { toast.error("No valid phone numbers"); return; }
+      const { headers, rows } = parseCSV(ev.target?.result as string);
+      if (rows.length === 0) {
+        toast.error("No phone numbers found — make sure the file has a column of phone numbers (a 'Phone' header works best).");
+        return;
+      }
       const existing = new Set(formRecipients.map((r) => r.phone));
-      const newOnes = parsed.filter((r) => !existing.has(r.phone));
+      const newOnes = rows.filter((r) => !existing.has(r.phone));
       setFormRecipients((prev) => [...prev, ...newOnes]);
-      toast.success(`Added ${newOnes.length} recipients`);
+      // Remember the column names so each template variable can be mapped to one.
+      if (headers.length > 0) {
+        setCsvColumns((prev) => [...new Set([...prev, ...headers])]);
+      }
+      toast.success(
+        newOnes.length === rows.length
+          ? `Added ${newOnes.length} recipients`
+          : `Added ${newOnes.length} recipients (${rows.length - newOnes.length} duplicates skipped)`,
+      );
     };
     reader.readAsText(file); e.target.value = "";
   }
@@ -841,21 +961,51 @@ export default function BroadcastPage() {
 
     setCreating(true);
     try {
+      // Resolve per-recipient variable values from the column mapping. Recipients
+      // with no value for a column-mapped variable fall back (server-side) to the
+      // global templateVars. `vars` is omitted when there's nothing personalized.
+      const varCount = selectedTemplate?.variableCount ?? 0;
+      const recipientsPayload = formRecipients.map((r) => {
+        const vars: Record<string, string> = {};
+        for (let i = 1; i <= varCount; i++) {
+          const key = String(i);
+          const mapping = varColumnMap[key];
+          if (mapping && mapping !== "__literal__") {
+            const v = sanitizeVar(r.fields?.[mapping] ?? "");
+            if (v) vars[key] = v;
+          }
+        }
+        return Object.keys(vars).length > 0
+          ? { phone: r.phone, contactName: r.contactName, vars }
+          : { phone: r.phone, contactName: r.contactName };
+      });
+
+      // Global fallback values = the typed value for every variable (whether it's
+      // an unmapped literal or the "default if blank" for a column-mapped one).
+      // The server overlays each recipient's column value on top of this, so a
+      // missing cell falls back here instead of emitting a literal "{{n}}".
+      const globalVars: Record<string, string> = {};
+      for (let i = 1; i <= varCount; i++) {
+        const key = String(i);
+        const v = sanitizeVar(templateVars[key] ?? "");
+        if (v) globalVars[key] = v;
+      }
+
       const res = await fetch("/api/whatsapp/broadcasts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: formName,
           templateId: selectedTemplateId,
-          templateVars,
-          recipients: formRecipients,
+          templateVars: globalVars,
+          recipients: recipientsPayload,
           scheduledAt: scheduledAtIso,
         }),
       });
       const json = (await res.json()) as { error?: string };
       if (!res.ok) { toast.error(json.error ?? "Failed"); setCreating(false); return; }
       toast.success(scheduledAtIso ? "Broadcast scheduled" : "Broadcast created");
-      setFormName(""); setSelectedTemplateId(""); setTemplateVars({}); setFormRecipients([]); setFormScheduledAt("");
+      setFormName(""); setSelectedTemplateId(""); setTemplateVars({}); setVarColumnMap({}); setCsvColumns([]); setFormRecipients([]); setFormScheduledAt("");
       setView("list"); await loadBroadcasts();
     } catch { toast.error("Failed"); }
     setCreating(false);
@@ -942,41 +1092,41 @@ export default function BroadcastPage() {
 
       {/* ========== LIST VIEW ========== */}
       {view === "list" && (<>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-500/10">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-green-500/10">
               <Radio className="h-5 w-5 text-green-500" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">Broadcasts</h1>
-              <p className="text-xs text-muted-foreground">{broadcasts.length} broadcasts · {totalSent} sent</p>
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">Broadcasts</h1>
+              <p className="text-xs text-muted-foreground truncate">{broadcasts.length} broadcasts · {totalSent} sent</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => setView("templates")} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
+            <button onClick={() => setView("templates")} className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors">
               <FileText className="h-4 w-4" /> Templates
             </button>
-            <button onClick={() => setView("create")} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors">
+            <button onClick={() => setView("create")} className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors">
               <Plus className="h-4 w-4" /> New Broadcast
             </button>
           </div>
         </div>
 
         {/* Stats */}
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {[
             { label: "Broadcasts", value: broadcasts.length, icon: Radio, color: "text-green-500", bg: "bg-green-500/10" },
             { label: "Messages Sent", value: totalSent, icon: Send, color: "text-blue-400", bg: "bg-blue-500/10" },
             { label: "Failed", value: totalFailed, icon: XCircle, color: "text-red-400", bg: "bg-red-500/10" },
             { label: "Templates", value: approvedTemplates.length, icon: FileText, color: "text-purple-400", bg: "bg-purple-500/10" },
           ].map(({ label, value, icon: Icon, color, bg }) => (
-            <div key={label} className="rounded-xl border bg-card p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
-                  <p className="text-2xl font-bold mt-1">{value}</p>
+            <div key={label} className="rounded-xl border bg-card p-3 sm:p-4">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide truncate">{label}</p>
+                  <p className="text-xl sm:text-2xl font-bold mt-1">{value}</p>
                 </div>
-                <div className={`flex h-9 w-9 items-center justify-center rounded-lg ${bg}`}><Icon className={`h-4 w-4 ${color}`} /></div>
+                <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bg}`}><Icon className={`h-4 w-4 ${color}`} /></div>
               </div>
             </div>
           ))}
@@ -998,16 +1148,16 @@ export default function BroadcastPage() {
             {broadcasts.map((b) => {
               const progress = b.totalCount > 0 ? Math.round(((b.sentCount + b.failedCount) / b.totalCount) * 100) : 0;
               return (
-                <div key={b.id} onClick={() => void openDetail(b.id)} className="flex items-center gap-4 rounded-xl border bg-card p-4 hover:border-primary/30 transition-colors cursor-pointer">
+                <div key={b.id} onClick={() => void openDetail(b.id)} className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 rounded-xl border bg-card p-4 hover:border-primary/30 transition-colors cursor-pointer">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <span className="font-semibold text-sm truncate">{b.name}</span>
+                    <div className="flex flex-wrap items-center gap-2 mb-0.5">
+                      <span className="font-semibold text-sm truncate max-w-full">{b.name}</span>
                       <Badge status={b.status} />
-                      {b.template && <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{b.template.name}</span>}
+                      {b.template && <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded truncate max-w-[140px]">{b.template.name}</span>}
                     </div>
                     <p className="text-xs text-muted-foreground truncate">{b.message}</p>
                   </div>
-                  <div className="flex items-center gap-6 shrink-0 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-4 sm:gap-6 shrink-0 text-xs text-muted-foreground">
                     <div className="text-center"><p className="font-bold text-foreground text-sm">{b.totalCount}</p><p>Recipients</p></div>
                     <div className="text-center"><p className="font-bold text-green-500 text-sm">{b.sentCount}</p><p>Sent</p></div>
                     <div className="text-center"><p className="font-bold text-red-400 text-sm">{b.failedCount}</p><p>Failed</p></div>
@@ -1018,8 +1168,8 @@ export default function BroadcastPage() {
                       </div>
                     )}
                   </div>
-                  <div className="shrink-0 text-[11px] text-muted-foreground w-20 text-right">{formatDistanceToNow(new Date(b.createdAt), { addSuffix: true })}</div>
-                  <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                  <div className="shrink-0 text-[11px] text-muted-foreground sm:w-20 text-left sm:text-right">{formatDistanceToNow(new Date(b.createdAt), { addSuffix: true })}</div>
+                  <div className="flex items-center gap-1 shrink-0 self-end sm:self-auto" onClick={(e) => e.stopPropagation()}>
                     {b.status === "DRAFT" && (
                       <button onClick={() => void handleSend(b.id)} disabled={sendingId === b.id} className="flex h-8 w-8 items-center justify-center rounded-lg text-green-500 hover:bg-green-500/10" title="Send">
                         {sendingId === b.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -1050,19 +1200,19 @@ export default function BroadcastPage() {
 
       {/* ========== TEMPLATES VIEW ========== */}
       {view === "templates" && (<>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={() => setView("list")} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">Message Templates</h1>
-              <p className="text-xs text-muted-foreground">Create and manage WhatsApp-approved message templates</p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={() => setView("list")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight">Message Templates</h1>
+              <p className="text-xs text-muted-foreground truncate">Create and manage WhatsApp-approved message templates</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => void syncTemplates()} disabled={syncing} className="inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50">
+            <button onClick={() => void syncTemplates()} disabled={syncing} className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors disabled:opacity-50">
               <RefreshCw className={`h-4 w-4 ${syncing ? "animate-spin" : ""}`} /> Sync from Meta
             </button>
-            <button onClick={() => setShowTplForm(!showTplForm)} className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors">
+            <button onClick={() => setShowTplForm(!showTplForm)} className="inline-flex flex-1 sm:flex-none items-center justify-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/80 transition-colors">
               <Plus className="h-4 w-4" /> Create Template
             </button>
           </div>
@@ -1070,9 +1220,9 @@ export default function BroadcastPage() {
 
         {/* Create template form */}
         {showTplForm && (
-          <div className="rounded-xl border bg-card p-5 space-y-4">
+          <div className="rounded-xl border bg-card p-4 sm:p-5 space-y-4">
             <h3 className="text-sm font-semibold">New Template</h3>
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="space-y-1">
                 <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Name</label>
                 <input value={tplName} onChange={(e) => setTplName(e.target.value)} placeholder="promotion_launch" className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary" />
@@ -1097,7 +1247,7 @@ export default function BroadcastPage() {
             {/* Header — TEXT or media (IMAGE/VIDEO/DOCUMENT) */}
             <div className="space-y-2">
               <label className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Header (optional)</label>
-              <div className="grid grid-cols-4 gap-1 rounded-lg border bg-background p-1">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1 rounded-lg border bg-background p-1">
                 {(["TEXT", "IMAGE", "VIDEO", "DOCUMENT"] as HeaderType[]).map((t) => (
                   <button
                     key={t}
@@ -1216,7 +1366,7 @@ export default function BroadcastPage() {
               {tplButtons.length > 0 && (
                 <div className="space-y-2">
                   {tplButtons.map((b, idx) => (
-                    <div key={idx} className="flex items-center gap-2 rounded-lg border bg-background p-2">
+                    <div key={idx} className="flex flex-wrap items-center gap-2 rounded-lg border bg-background p-2">
                       <span className="shrink-0 rounded bg-muted px-2 py-1 text-[10px] font-medium text-muted-foreground">
                         {b.type === "QUICK_REPLY" ? "Reply" : b.type === "URL" ? "URL" : "Phone"}
                       </span>
@@ -1225,14 +1375,14 @@ export default function BroadcastPage() {
                         onChange={(e) => updateButton(idx, { text: e.target.value })}
                         placeholder="Button text (e.g. Visit website)"
                         maxLength={25}
-                        className="flex-1 rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
+                        className="flex-1 min-w-[140px] rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
                       />
                       {b.type === "URL" && (
                         <input
                           value={(b as { url: string }).url}
                           onChange={(e) => updateButton(idx, { url: e.target.value })}
                           placeholder="https://example.com"
-                          className="flex-[2] rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
+                          className="flex-[2] min-w-[160px] rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
                         />
                       )}
                       {b.type === "PHONE_NUMBER" && (
@@ -1240,7 +1390,7 @@ export default function BroadcastPage() {
                           value={(b as { phone: string }).phone}
                           onChange={(e) => updateButton(idx, { phone: e.target.value })}
                           placeholder="+15551234567"
-                          className="flex-[2] rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
+                          className="flex-[2] min-w-[160px] rounded-md border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
                         />
                       )}
                       <button
@@ -1394,9 +1544,9 @@ export default function BroadcastPage() {
       {/* ========== CREATE VIEW ========== */}
       {view === "create" && (<>
         <div className="flex items-center gap-3">
-          <button onClick={() => setView("list")} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight">
+          <button onClick={() => setView("list")} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
+          <div className="min-w-0">
+            <h1 className="text-lg sm:text-xl font-bold tracking-tight">
               New Broadcast
               <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide align-middle">
                 <Clock className="h-3 w-3" />
@@ -1429,7 +1579,7 @@ export default function BroadcastPage() {
                 {selectedTemplate && (
                   <button
                     type="button"
-                    onClick={() => { setSelectedTemplateId(""); setTemplateVars({}); }}
+                    onClick={() => { setSelectedTemplateId(""); setTemplateVars({}); setVarColumnMap({}); }}
                     className="text-[11px] text-muted-foreground hover:text-foreground"
                   >
                     Clear
@@ -1494,7 +1644,7 @@ export default function BroadcastPage() {
                             <button
                               key={t.id}
                               type="button"
-                              onClick={() => { setSelectedTemplateId(t.id); setTemplateVars({}); }}
+                              onClick={() => { setSelectedTemplateId(t.id); setTemplateVars({}); setVarColumnMap({}); }}
                               className={`relative flex flex-col rounded-xl border overflow-hidden transition-all text-left ${
                                 selected
                                   ? "border-primary ring-2 ring-primary/30 bg-primary/5"
@@ -1535,22 +1685,47 @@ export default function BroadcastPage() {
               )}
             </div>
 
-            {/* Variable inputs */}
+            {/* Variable inputs — map each {{n}} to a CSV column, or type a constant */}
             {selectedTemplate && selectedTemplate.variableCount > 0 && (
               <div className="space-y-2">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Template Variables</label>
-                <div className="grid grid-cols-2 gap-3">
-                  {Array.from({ length: selectedTemplate.variableCount }, (_, i) => (
-                    <div key={i} className="space-y-1">
-                      <label className="text-[11px] text-muted-foreground">{`{{${i + 1}}}`}</label>
-                      <input
-                        value={templateVars[String(i + 1)] ?? ""}
-                        onChange={(e) => setTemplateVars((prev) => ({ ...prev, [String(i + 1)]: e.target.value }))}
-                        placeholder={`Value for {{${i + 1}}}`}
-                        className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
-                      />
-                    </div>
-                  ))}
+                {csvColumns.length > 0 && (
+                  <p className="text-[11px] text-muted-foreground">
+                    Pick a column from your uploaded file for each variable (personalized per recipient), or choose “Custom value” to use one value for everyone.
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {Array.from({ length: selectedTemplate.variableCount }, (_, i) => {
+                    const key = String(i + 1);
+                    const mapping = varColumnMap[key] ?? "";
+                    const isColumnMapped = csvColumns.length > 0 && mapping !== "" && mapping !== "__literal__";
+                    return (
+                      <div key={i} className="space-y-1">
+                        <label className="text-[11px] text-muted-foreground">{`{{${i + 1}}}`}</label>
+                        {csvColumns.length > 0 && (
+                          <select
+                            value={mapping}
+                            onChange={(e) => setVarColumnMap((prev) => ({ ...prev, [key]: e.target.value }))}
+                            className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                          >
+                            <option value="">— choose column —</option>
+                            {csvColumns.map((c) => (
+                              <option key={c} value={c}>{c}</option>
+                            ))}
+                            <option value="__literal__">Custom value…</option>
+                          </select>
+                        )}
+                        {/* Always available: the value when unmapped, or the fallback used
+                            for any recipient whose mapped column cell is blank. */}
+                        <input
+                          value={templateVars[key] ?? ""}
+                          onChange={(e) => setTemplateVars((prev) => ({ ...prev, [key]: e.target.value }))}
+                          placeholder={isColumnMapped ? "Default if blank (optional)" : `Value for {{${i + 1}}}`}
+                          className="w-full rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                        />
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             )}
@@ -1560,14 +1735,14 @@ export default function BroadcastPage() {
               <div className="space-y-2">
                 <p className="text-[11px] font-medium text-muted-foreground uppercase tracking-wide">Message Preview</p>
                 <div className="rounded-lg border p-4" style={{ background: "#0b141a" }}>
-                  <TemplatePreviewCard template={selectedTemplate} values={templateVars} compact />
+                  <TemplatePreviewCard template={selectedTemplate} values={previewVars} compact />
                 </div>
               </div>
             )}
 
             {/* Recipients */}
             <div className="space-y-3">
-              <div className="flex items-center justify-between">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <label className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Recipients</label>
                 {/* Mode toggle */}
                 <div className="inline-flex rounded-lg border bg-background p-0.5 text-[11px]">
@@ -1598,13 +1773,13 @@ export default function BroadcastPage() {
 
               {recipientMode === "manual" && (
                 <>
-                  <div className="flex gap-2">
-                    <button onClick={() => fileRef.current?.click()} className="inline-flex items-center gap-2 rounded-lg border bg-background px-4 py-2.5 text-sm font-medium hover:bg-muted">
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => fileRef.current?.click()} className="inline-flex w-full sm:w-auto items-center justify-center gap-2 rounded-lg border bg-background px-4 py-2.5 text-sm font-medium hover:bg-muted">
                       <Upload className="h-4 w-4" /> Upload CSV
                     </button>
                     <input ref={fileRef} type="file" accept=".csv,.txt,.tsv" onChange={handleFileUpload} className="hidden" />
-                    <input value={manualPhone} onChange={(e) => setManualPhone(e.target.value)} placeholder="+971501234567" className="flex-1 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
-                    <input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Name" className="w-32 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+                    <input value={manualPhone} onChange={(e) => setManualPhone(e.target.value)} placeholder="+971501234567" className="flex-1 min-w-[140px] rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
+                    <input value={manualName} onChange={(e) => setManualName(e.target.value)} placeholder="Name" className="w-24 sm:w-32 rounded-lg border bg-background px-3 py-2.5 text-sm outline-none focus:border-primary" onKeyDown={(e) => { if (e.key === "Enter") addManual(); }} />
                     <button onClick={addManual} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground hover:bg-primary/80"><Plus className="h-4 w-4" /></button>
                   </div>
                   <p className="text-[10px] text-muted-foreground/50">CSV: one number per line, or phone,name columns</p>
@@ -1669,19 +1844,19 @@ export default function BroadcastPage() {
                       Save current {formRecipients.length} recipients as a segment
                     </span>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap gap-2">
                     <input
                       value={saveSegmentTag}
                       onChange={(e) => setSaveSegmentTag(e.target.value)}
                       placeholder="e.g. purchased, vip, newsletter"
-                      className="flex-1 rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
+                      className="flex-1 min-w-[160px] rounded-lg border bg-background px-3 py-2 text-sm outline-none focus:border-primary"
                       onKeyDown={(e) => { if (e.key === "Enter") void saveCurrentAsSegment(); }}
                     />
                     <button
                       type="button"
                       onClick={() => void saveCurrentAsSegment()}
                       disabled={savingSegment || !saveSegmentTag.trim()}
-                      className="inline-flex items-center gap-1.5 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-medium hover:bg-primary/80 disabled:opacity-50"
+                      className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-primary text-primary-foreground px-3 py-2 text-xs font-medium hover:bg-primary/80 disabled:opacity-50"
                     >
                       {savingSegment ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
                       Save segment
@@ -1726,8 +1901,8 @@ export default function BroadcastPage() {
             </div>
 
             {/* Submit */}
-            <div className="flex items-center gap-3 pt-2">
-              <button onClick={() => void handleCreate()} disabled={creating || !formName.trim() || !selectedTemplateId || formRecipients.length === 0} className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed">
+            <div className="flex flex-wrap items-center gap-3 pt-2">
+              <button onClick={() => void handleCreate()} disabled={creating || !formName.trim() || !selectedTemplateId || formRecipients.length === 0} className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80 disabled:opacity-50 disabled:cursor-not-allowed">
                 {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : formScheduledAt ? <Clock className="h-4 w-4" /> : <Send className="h-4 w-4" />}
                 {formScheduledAt ? "Schedule Broadcast" : "Create Broadcast"}
               </button>
@@ -1763,16 +1938,16 @@ export default function BroadcastPage() {
 
       {/* ========== DETAIL VIEW ========== */}
       {view === "detail" && (<>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={() => { setView("list"); setActiveBroadcast(null); }} className="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">{activeBroadcast?.name ?? "Loading..."}</h1>
-              {activeBroadcast && <p className="text-xs text-muted-foreground">Created {format(new Date(activeBroadcast.createdAt), "d MMM yyyy, HH:mm")}</p>}
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3 min-w-0">
+            <button onClick={() => { setView("list"); setActiveBroadcast(null); }} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground hover:bg-muted"><ArrowLeft className="h-4 w-4" /></button>
+            <div className="min-w-0">
+              <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">{activeBroadcast?.name ?? "Loading..."}</h1>
+              {activeBroadcast && <p className="text-xs text-muted-foreground truncate">Created {format(new Date(activeBroadcast.createdAt), "d MMM yyyy, HH:mm")}</p>}
             </div>
           </div>
           {activeBroadcast && (
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               {activeBroadcast.status === "DRAFT" && (
                 <button onClick={() => void handleSend(activeBroadcast.id)} disabled={sendingId === activeBroadcast.id} className="inline-flex items-center gap-2 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-700">
                   {sendingId === activeBroadcast.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} Send Now
@@ -1811,7 +1986,7 @@ export default function BroadcastPage() {
         {detailLoading || !activeBroadcast ? (
           <div className="flex justify-center py-20"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
         ) : (<>
-          <div className="grid grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
             {[
               { label: "Total", value: activeBroadcast.totalCount, color: "text-foreground" },
               { label: "Sent", value: activeBroadcast.sentCount, color: "text-blue-400" },
@@ -1819,8 +1994,8 @@ export default function BroadcastPage() {
               { label: "Read", value: activeBroadcast.readCount, color: "text-purple-400" },
               { label: "Failed", value: activeBroadcast.failedCount, color: "text-red-400" },
             ].map(({ label, value, color }) => (
-              <div key={label} className="rounded-xl border bg-card p-4 text-center">
-                <p className={`text-2xl font-bold ${color}`}>{value}</p>
+              <div key={label} className="rounded-xl border bg-card p-3 sm:p-4 text-center">
+                <p className={`text-xl sm:text-2xl font-bold ${color}`}>{value}</p>
                 <p className="text-[11px] text-muted-foreground mt-0.5">{label}</p>
               </div>
             ))}
@@ -1843,7 +2018,7 @@ export default function BroadcastPage() {
             <p className="text-sm whitespace-pre-wrap leading-relaxed">{activeBroadcast.message}</p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge status={activeBroadcast.status} />
             {activeBroadcast.startedAt && <span className="text-xs text-muted-foreground">Started {format(new Date(activeBroadcast.startedAt), "d MMM HH:mm")}</span>}
             {activeBroadcast.completedAt && <span className="text-xs text-muted-foreground">· Completed {format(new Date(activeBroadcast.completedAt), "d MMM HH:mm")}</span>}
@@ -1851,18 +2026,18 @@ export default function BroadcastPage() {
 
           {/* Recipients table */}
           <div className="rounded-xl border bg-card overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b">
-              <span className="text-sm font-medium">Recipients ({activeBroadcast.recipients.length})</span>
-              <div className="flex items-center gap-1">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between px-4 py-3 border-b">
+              <span className="text-sm font-medium shrink-0">Recipients ({activeBroadcast.recipients.length})</span>
+              <div className="flex items-center gap-1 overflow-x-auto -mx-1 px-1 sm:flex-wrap sm:overflow-visible sm:justify-end">
                 {["all", "PENDING", "SENT", "DELIVERED", "READ", "FAILED"].map((f) => (
-                  <button key={f} onClick={() => setRecipientFilter(f)} className={`px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${recipientFilter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
+                  <button key={f} onClick={() => setRecipientFilter(f)} className={`shrink-0 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${recipientFilter === f ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted"}`}>
                     {f === "all" ? "All" : f.charAt(0) + f.slice(1).toLowerCase()}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="max-h-[500px] overflow-y-auto">
-              <table className="w-full text-sm">
+            <div className="max-h-[500px] overflow-auto">
+              <table className="w-full min-w-[560px] text-sm">
                 <thead className="bg-muted/50 sticky top-0">
                   <tr>
                     <th className="text-left px-4 py-2.5 text-[11px] font-medium text-muted-foreground uppercase">Phone</th>
@@ -1961,18 +2136,18 @@ export default function BroadcastPage() {
                 {previewTpl.status === "APPROVED" && (
                   <button
                     onClick={() => startBroadcastFromTemplate(previewTpl)}
-                    className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-3 py-1.5 text-xs font-medium hover:bg-primary/80"
+                    className="inline-flex items-center gap-1.5 rounded-md bg-primary text-primary-foreground px-2.5 sm:px-3 py-1.5 text-xs font-medium hover:bg-primary/80"
                     title="Create a broadcast using this template"
                   >
-                    <Send className="h-3.5 w-3.5" /> Broadcast
+                    <Send className="h-3.5 w-3.5" /> {!isMobile && "Broadcast"}
                   </button>
                 )}
                 <button
                   onClick={() => duplicateTemplate(previewTpl)}
-                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted"
+                  className="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 sm:px-3 py-1.5 text-xs font-medium hover:bg-muted"
                   title="Duplicate this template"
                 >
-                  <Copy className="h-3.5 w-3.5" /> Duplicate
+                  <Copy className="h-3.5 w-3.5" /> {!isMobile && "Duplicate"}
                 </button>
                 <button
                   onClick={() => setPreviewTpl(null)}
@@ -1990,7 +2165,7 @@ export default function BroadcastPage() {
                 flex: 1,
                 overflowY: "auto",
                 background: "#0b141a",
-                padding: 24,
+                padding: isMobile ? 14 : 24,
                 display: "flex",
                 justifyContent: "center",
               }}

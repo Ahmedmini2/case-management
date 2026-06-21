@@ -1,5 +1,6 @@
 import { auth, signOut } from "@/lib/auth";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { MobileNavToggle } from "@/components/layout/MobileNav";
 import { NotificationBell } from "@/components/layout/NotificationBell";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { LogOut } from "lucide-react";
@@ -41,23 +42,24 @@ export async function Header() {
     .toUpperCase();
 
   return (
-    <header className="flex h-16 items-center justify-between border-b bg-background/80 px-6 backdrop-blur-sm">
-      {/* Left: user identity */}
-      <div className="flex items-center gap-3">
-        <Avatar className="h-8 w-8 ring-2 ring-primary/20">
+    <header className="flex h-16 items-center justify-between gap-2 border-b bg-background/80 px-4 sm:px-6 backdrop-blur-sm">
+      {/* Left: mobile menu toggle + user identity */}
+      <div className="flex items-center gap-2 sm:gap-3 min-w-0">
+        <MobileNavToggle />
+        <Avatar className="h-8 w-8 shrink-0 ring-2 ring-primary/20">
           <AvatarImage src={freshImage ?? undefined} alt={displayName} />
           <AvatarFallback className="bg-primary/10 text-primary text-xs font-semibold">
             {initials}
           </AvatarFallback>
         </Avatar>
-        <div className="hidden sm:block">
+        <div className="hidden sm:block min-w-0">
           <p className="text-xs text-muted-foreground leading-none mb-0.5">Signed in as</p>
-          <p className="text-sm font-semibold leading-none">{displayName}</p>
+          <p className="text-sm font-semibold leading-none truncate">{displayName}</p>
         </div>
       </div>
 
       {/* Right: actions */}
-      <div className="flex items-center gap-1">
+      <div className="flex items-center gap-1 shrink-0">
         <NotificationBell />
         <ThemeToggle />
         <div className="mx-1 h-5 w-px bg-border" />

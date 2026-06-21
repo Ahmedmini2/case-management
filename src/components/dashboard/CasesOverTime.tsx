@@ -30,7 +30,7 @@ export function CasesOverTime({
           Cases Created Over Time
         </CardTitle>
       </CardHeader>
-      <CardContent className="h-72 pt-2 min-w-0">
+      <CardContent className="h-60 pt-2 min-w-0 sm:h-72">
         <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
           <AreaChart data={formatted} margin={{ top: 4, right: 8, left: -16, bottom: 0 }}>
             <defs>

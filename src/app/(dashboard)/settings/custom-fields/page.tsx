@@ -69,7 +69,7 @@ export default function CustomFieldsSettingsPage() {
             <select
               value={type}
               onChange={(e) => setType(e.target.value)}
-              className="h-10 rounded-md border bg-background px-3 text-sm"
+              className="h-10 w-full rounded-md border bg-background px-3 text-sm"
             >
               <option>TEXT</option>
               <option>NUMBER</option>

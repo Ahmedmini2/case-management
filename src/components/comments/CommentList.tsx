@@ -15,7 +15,7 @@ export function CommentList({ comments }: { comments: CommentItem[] }) {
     <div className="space-y-3">
       {comments.map((comment) => (
         <div key={comment.id} className="rounded-md border p-3">
-          <p className="whitespace-pre-wrap text-sm">{comment.body}</p>
+          <p className="whitespace-pre-wrap break-words text-sm">{comment.body}</p>
           <p className="mt-2 text-xs text-muted-foreground">
             {comment.author.name ?? comment.author.email ?? "Unknown"} -{" "}
             {new Date(comment.createdAt).toLocaleString()}

@@ -13,6 +13,7 @@ import {
   Loader2,
   MessageSquarePlus,
   Paperclip,
+  Search,
   Send,
   X,
 } from "lucide-react";
@@ -101,7 +102,21 @@ export function CaseWhatsAppPanel({
   const [tplId, setTplId] = useState("");
   const [tplVars, setTplVars] = useState<Record<string, string>>({});
   const [tplSending, setTplSending] = useState(false);
+  const [tplSearch, setTplSearch] = useState("");
   const tplSelected = tplList.find((t) => t.id === tplId) ?? null;
+  const tplFiltered = tplSearch.trim()
+    ? tplList.filter((t) => {
+        const q = tplSearch.toLowerCase();
+        return t.name.toLowerCase().includes(q) || t.body.toLowerCase().includes(q);
+      })
+    : tplList;
+
+  // Pick a template, pre-filling {{1}} with the client's first name from the chat.
+  function selectTemplate(t: TemplateLite) {
+    setTplId(t.id);
+    const firstName = (contactName ?? "").trim().split(/\s+/)[0] ?? "";
+    setTplVars(t.variableCount > 0 && firstName ? { "1": firstName } : {});
+  }
 
   /* ---- Find or create the conversation by phone ---- */
   const findConversation = useCallback(async () => {
@@ -309,6 +324,7 @@ export function CaseWhatsAppPanel({
     setTplOpen(true);
     setTplId("");
     setTplVars({});
+    setTplSearch("");
     try {
       const res = await fetch("/api/whatsapp/templates");
       const json = (await res.json()) as { data: TemplateLite[] | null };
@@ -400,32 +416,32 @@ export function CaseWhatsAppPanel({
   return (
     <div className="flex h-[640px] flex-col rounded-lg border bg-card overflow-hidden">
       {/* Header */}
-      <div className="flex h-12 items-center justify-between border-b bg-muted/30 px-4">
-        <div className="flex items-center gap-3 min-w-0">
+      <div className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b bg-muted/30 px-3 py-2 sm:px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
           <div className="h-2 w-2 rounded-full bg-[#25D366] shrink-0" />
           <div className="min-w-0">
             <div className="text-sm font-semibold truncate">{conversation.contactName}</div>
-            <div className="text-[11px] text-muted-foreground font-mono">{conversation.contactPhone}</div>
+            <div className="text-[11px] text-muted-foreground font-mono truncate">{conversation.contactPhone}</div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex shrink-0 items-center gap-2">
           <span className={`inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium ${conversation.handledBy === "AI" ? "bg-blue-500/20 text-blue-400" : "bg-purple-500/20 text-purple-400"}`}>
             {conversation.handledBy === "AI" ? "🤖 AI" : "👤 Human"}
           </span>
           <button
             onClick={() => void toggleHandoff()}
             disabled={takingOver}
-            className="inline-flex items-center gap-1 rounded border bg-background px-3 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60"
+            className="inline-flex items-center gap-1 rounded border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted disabled:opacity-60 sm:px-3"
           >
-            <ArrowLeftRight className="h-3 w-3" />
-            {takingOver ? "..." : conversation.handledBy === "AI" ? "Take over" : "Hand back"}
+            <ArrowLeftRight className="h-3 w-3 shrink-0" />
+            <span className="hidden sm:inline">{takingOver ? "..." : conversation.handledBy === "AI" ? "Take over" : "Hand back"}</span>
           </button>
           <button
             onClick={() => void openTemplate()}
-            className="inline-flex items-center gap-1 rounded border bg-background px-3 py-1 text-xs font-medium hover:bg-muted"
+            className="inline-flex items-center gap-1 rounded border bg-background px-2.5 py-1 text-xs font-medium hover:bg-muted sm:px-3"
           >
-            <FileText className="h-3 w-3" />
-            Template
+            <FileText className="h-3 w-3 shrink-0" />
+            <span className="hidden sm:inline">Template</span>
           </button>
         </div>
       </div>
@@ -434,7 +450,7 @@ export function CaseWhatsAppPanel({
       <div
         ref={messagesContainerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto px-5 py-4 bg-background"
+        className="flex-1 overflow-y-auto bg-background px-3 py-4 sm:px-5"
       >
         {grouped.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -509,9 +525,9 @@ export function CaseWhatsAppPanel({
           🤖 AI is handling this chat. Take over to reply.
         </div>
       ) : windowExpired ? (
-        <div className="flex items-center gap-3 border-t border-amber-500/30 bg-amber-500/5 px-4 py-3">
+        <div className="flex flex-wrap items-center gap-3 border-t border-amber-500/30 bg-amber-500/5 px-3 py-3 sm:px-4">
           <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
-          <div className="flex-1 min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="text-xs font-semibold text-amber-500">24-hour reply window has expired</div>
             <div className="text-[11px] text-amber-500/70">
               {lastInboundAt
@@ -522,7 +538,7 @@ export function CaseWhatsAppPanel({
           </div>
           <button
             onClick={() => void openTemplate()}
-            className="inline-flex items-center gap-1 rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-black hover:opacity-90"
+            className="inline-flex shrink-0 items-center gap-1 rounded bg-amber-500 px-3 py-1.5 text-xs font-semibold text-black hover:opacity-90"
           >
             <FileText className="h-3 w-3" />
             Send Template
@@ -603,16 +619,29 @@ export function CaseWhatsAppPanel({
               </button>
             </div>
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
+              {/* Search by template name */}
+              <div className="relative">
+                <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <input
+                  value={tplSearch}
+                  onChange={(e) => setTplSearch(e.target.value)}
+                  placeholder="Search templates by name..."
+                  autoFocus
+                  className="w-full rounded border bg-background py-1.5 pl-8 pr-2 text-xs outline-none focus:ring-1 focus:ring-primary/40"
+                />
+              </div>
               {tplList.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
                   No approved templates. Submit one in the Broadcast page.
                 </p>
+              ) : tplFiltered.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No templates match &ldquo;{tplSearch}&rdquo;.</p>
               ) : (
                 <div className="space-y-1.5">
-                  {tplList.map((t) => (
+                  {tplFiltered.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => { setTplId(t.id); setTplVars({}); }}
+                      onClick={() => selectTemplate(t)}
                       className={`w-full text-left rounded border px-3 py-2 ${tplId === t.id ? "border-primary bg-primary/5" : "hover:bg-muted"}`}
                     >
                       <div className="flex items-center gap-2">

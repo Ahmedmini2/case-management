@@ -5,6 +5,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { formatDistanceToNow, format, isToday, isYesterday } from "date-fns";
 import { toast } from "sonner";
 import {
+  ArrowLeft,
   Phone,
   Search,
   Send,
@@ -34,6 +35,8 @@ import {
   AlertTriangle,
   Clock,
 } from "lucide-react";
+import { WhatsAppCasePanel } from "@/components/whatsapp/WhatsAppCasePanel";
+import { useIsMobile } from "@/hooks/use-mobile";
 
 /* ------------------------------------------------------------------ */
 /*  TYPES                                                              */
@@ -53,6 +56,7 @@ interface Conversation {
   caseId?: string;
   caseNumber?: string;
   tags: string[];
+  isBroadcastOnly?: boolean;
 }
 
 interface Message {
@@ -67,6 +71,9 @@ interface Message {
   timestamp: string;
   status: string;
   isAI: boolean;
+  replyToMessageId?: string | null;
+  // Snippet of the message this one replied to (enriched by the messages API).
+  replyTo?: { body: string; sender: string; senderName: string; mediaType?: string | null } | null;
 }
 
 /* ------------------------------------------------------------------ */
@@ -99,6 +106,9 @@ function dateDivider(dateStr: string): string {
 }
 
 type Filter = "all" | "mine" | "broadcasts" | "ai" | "human" | "unread";
+
+// Conversation list page size for infinite scroll.
+const CONV_PAGE_SIZE = 100;
 
 interface BroadcastSummary {
   id: string;
@@ -298,12 +308,19 @@ function MediaPreview({ mediaType, mediaUrl }: { mediaType: string; mediaUrl?: s
 /* ------------------------------------------------------------------ */
 
 export default function WhatsAppPage() {
+  const isMobile = useIsMobile();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
+  // Infinite-scroll paging for the conversation list.
+  const [hasMoreConv, setHasMoreConv] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const searchRef = useRef("");
+  const loadedCountRef = useRef(0);
+  const loadSeqRef = useRef(0);
   const [sending, setSending] = useState(false);
   const [replyText, setReplyText] = useState("");
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -417,17 +434,32 @@ export default function WhatsAppPage() {
   const [tplSelectedId, setTplSelectedId] = useState("");
   const [tplVars, setTplVars] = useState<Record<string, string>>({});
   const [tplSending, setTplSending] = useState(false);
+  const [tplSearch, setTplSearch] = useState("");
 
   const tplSelected = tplList.find((t) => t.id === tplSelectedId) ?? null;
+  const tplFiltered = tplSearch.trim()
+    ? tplList.filter((t) => {
+        const q = tplSearch.toLowerCase();
+        return t.name.toLowerCase().includes(q) || t.body.toLowerCase().includes(q);
+      })
+    : tplList;
   let tplPreview = tplSelected?.body ?? "";
   for (const [k, v] of Object.entries(tplVars)) {
     tplPreview = tplPreview.replaceAll(`{{${k}}}`, v || `{{${k}}}`);
+  }
+
+  // Pick a template and pre-fill {{1}} with the client's first name from the chat.
+  function selectTemplate(t: TemplateLite) {
+    setTplSelectedId(t.id);
+    const firstName = (activeConv?.contactName ?? "").trim().split(/\s+/)[0] ?? "";
+    setTplVars(t.variableCount > 0 && firstName ? { "1": firstName } : {});
   }
 
   async function openTemplateModal() {
     setTplModalOpen(true);
     setTplSelectedId("");
     setTplVars({});
+    setTplSearch("");
     try {
       const res = await fetch("/api/whatsapp/templates");
       const json = (await res.json()) as { data: TemplateLite[] | null };
@@ -466,6 +498,8 @@ export default function WhatsAppPage() {
   const [agents, setAgents] = useState<{ id: string; name: string | null; email: string }[]>([]);
   const [showTagInput, setShowTagInput] = useState(false);
   const [tagInput, setTagInput] = useState("");
+  // All tags ever used across conversations — the reusable picker.
+  const [knownTags, setKnownTags] = useState<{ name: string; count: number }[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
@@ -479,6 +513,20 @@ export default function WhatsAppPage() {
 
   const activeConv = conversations.find((c) => c.id === activeId) ?? null;
 
+  /* ---- Mobile single-pane: which pane is visible ---- */
+  // On phones we show one pane at a time. A "detail" pane (chat thread or
+  // broadcast drill-down) is open when a conversation is selected or a broadcast
+  // is selected in the Broadcast Lists tab. Otherwise the conversation list shows.
+  const mobileDetailOpen = !!activeConv || (filter === "broadcasts" && !!activeBroadcastId);
+  const showListPane = !isMobile || !mobileDetailOpen;
+  const showDetailPane = !isMobile || mobileDetailOpen;
+
+  /* ---- Go back to the list pane (mobile) ---- */
+  function backToList() {
+    setActiveId(null);
+    setActiveBroadcastId(null);
+  }
+
   /* ---- 24-hour Meta policy window ---- */
   // Find the most recent inbound (customer) message timestamp.
   // Meta policy: outside the 24h customer-service window, only approved templates may be sent.
@@ -491,18 +539,56 @@ export default function WhatsAppPage() {
   const windowExpired = lastInboundAt === null || (Date.now() - lastInboundAt) > TWENTY_FOUR_HOURS_MS;
   const windowMsRemaining = lastInboundAt !== null ? Math.max(0, TWENTY_FOUR_HOURS_MS - (Date.now() - lastInboundAt)) : 0;
 
-  /* ---- Fetch conversations ---- */
+  /* ---- Fetch conversations (refresh first page(s); server-side search) ---- */
   const loadConversations = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
     try {
-      const res = await fetch("/api/whatsapp/conversations", { cache: "no-store" });
+      // Refresh every page already scrolled into view so the poll keeps them fresh.
+      const limit = Math.max(CONV_PAGE_SIZE, loadedCountRef.current);
+      const params = new URLSearchParams({ limit: String(limit), offset: "0" });
+      if (searchRef.current.trim()) params.set("search", searchRef.current.trim());
+      const res = await fetch(`/api/whatsapp/conversations?${params.toString()}`, { cache: "no-store" });
       const json = (await res.json()) as { data: Conversation[] | null };
-      setConversations(json.data ?? []);
+      if (seq !== loadSeqRef.current) return; // a newer request superseded this one
+      const data = json.data ?? [];
+      setConversations(data);
+      loadedCountRef.current = data.length;
+      setHasMoreConv(data.length >= limit);
     } catch {
       /* silent */
     } finally {
-      setLoading(false);
+      if (seq === loadSeqRef.current) setLoading(false);
     }
   }, []);
+
+  /* ---- Load the next page and append (infinite scroll) ---- */
+  const loadMoreConversations = useCallback(async () => {
+    if (loadingMore || !hasMoreConv) return;
+    setLoadingMore(true);
+    const seq = loadSeqRef.current;
+    try {
+      const params = new URLSearchParams({
+        limit: String(CONV_PAGE_SIZE),
+        offset: String(loadedCountRef.current),
+      });
+      if (searchRef.current.trim()) params.set("search", searchRef.current.trim());
+      const res = await fetch(`/api/whatsapp/conversations?${params.toString()}`, { cache: "no-store" });
+      const json = (await res.json()) as { data: Conversation[] | null };
+      const data = json.data ?? [];
+      if (seq !== loadSeqRef.current) return; // a refresh happened; drop this page
+      setConversations((prev) => {
+        const seen = new Set(prev.map((c) => c.id));
+        const merged = [...prev, ...data.filter((c) => !seen.has(c.id))];
+        loadedCountRef.current = merged.length;
+        return merged;
+      });
+      setHasMoreConv(data.length >= CONV_PAGE_SIZE);
+    } catch {
+      /* silent */
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [loadingMore, hasMoreConv]);
 
   /* ---- Fetch agents for assignment ---- */
   useEffect(() => {
@@ -525,10 +611,30 @@ export default function WhatsAppPage() {
     }
   }, []);
 
-  /* ---- Mount: load conversations ---- */
+  /* ---- Fetch the reusable tag vocabulary ---- */
+  const loadKnownTags = useCallback(async () => {
+    try {
+      const res = await fetch("/api/whatsapp/conversations/tags", { cache: "no-store" });
+      const json = (await res.json()) as { data: { tags: { name: string; count: number }[] } | null };
+      setKnownTags(json.data?.tags ?? []);
+    } catch {
+      /* silent */
+    }
+  }, []);
+
+  /* ---- Mount: load known tags ---- */
   useEffect(() => {
-    void loadConversations();
-  }, [loadConversations]);
+    void loadKnownTags();
+  }, [loadKnownTags]);
+
+  /* ---- Load conversations on mount + whenever search changes (debounced,
+         server-side). Resets paging to the first page for the new query. ---- */
+  useEffect(() => {
+    searchRef.current = search;
+    loadedCountRef.current = 0;
+    const t = setTimeout(() => { void loadConversations(); }, search ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [search, loadConversations]);
 
   /* ---- Load broadcasts (for Broadcast Lists tab) ---- */
   const loadBroadcasts = useCallback(async () => {
@@ -647,10 +753,28 @@ export default function WhatsAppPage() {
     userPinnedToBottomRef.current = distanceFromBottom < 80;
   }
 
+  /* ---- Open a conversation and optimistically mark it read ---- */
+  function openConversation(id: string) {
+    setActiveId(id);
+    // The messages GET marks it read server-side; reset the badge immediately too.
+    setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, unreadCount: 0 } : c)));
+  }
+
   /* ---- Filter conversations ---- */
   const filtered = conversations.filter((c) => {
-    const q = search.toLowerCase();
-    if (q && !c.contactName.toLowerCase().includes(q) && !c.contactPhone.includes(q) && !(c.lastMessage ?? "").toLowerCase().includes(q)) return false;
+    // Broadcast-only chats (a send the customer never replied to) belong to the
+    // Broadcast tab, not the chat tabs.
+    if (c.isBroadcastOnly) return false;
+    const q = search.toLowerCase().trim();
+    if (q) {
+      // Phone search is digit-insensitive: "0501234567", "971 50…" or "+97150…"
+      // all match a stored "+971501234567".
+      const qDigits = q.replace(/\D/g, "");
+      const nameHit = c.contactName.toLowerCase().includes(q);
+      const phoneHit = qDigits.length > 0 && c.contactPhone.replace(/\D/g, "").includes(qDigits);
+      const msgHit = (c.lastMessage ?? "").toLowerCase().includes(q);
+      if (!nameHit && !phoneHit && !msgHit) return false;
+    }
     if (filter === "ai" && c.handledBy !== "AI") return false;
     if (filter === "human" && c.handledBy !== "HUMAN") return false;
     if (filter === "unread" && c.unreadCount === 0) return false;
@@ -801,15 +925,21 @@ export default function WhatsAppPage() {
   }
 
   /* ---- Mark resolved ---- */
-  async function markResolved() {
+  // keepHuman=true closes the chat but pins it to a human agent (handledBy=HUMAN)
+  // so the AI never auto-replies — for VIPs we don't want handed to the bot.
+  async function markResolved(keepHuman = false) {
     if (!activeConv) return;
     setDropdownOpen(false);
 
-    // Resolve the conversation
+    // Resolve the conversation. When keeping it with a human, also set
+    // handledBy=HUMAN (the PATCH route assigns the current agent if it was AI).
+    const convBody: Record<string, unknown> = { status: "resolved" };
+    if (keepHuman) convBody.handledBy = "human";
+
     await fetch(`/api/whatsapp/conversations/${activeConv.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: "resolved" }),
+      body: JSON.stringify(convBody),
     });
 
     // Also resolve the linked case if one exists
@@ -823,9 +953,11 @@ export default function WhatsAppPage() {
 
     await loadConversations();
     toast.success(
-      activeConv.caseId
-        ? "Conversation & linked case resolved"
-        : "Conversation marked as resolved",
+      keepHuman
+        ? "Resolved — kept with you (AI won't reply)"
+        : activeConv.caseId
+          ? "Conversation & linked case resolved"
+          : "Conversation marked as resolved",
     );
   }
 
@@ -844,10 +976,14 @@ export default function WhatsAppPage() {
   }
 
   /* ---- Add / remove tag ---- */
-  async function addTag() {
-    if (!activeConv || !tagInput.trim()) return;
-    const tag = tagInput.trim().toLowerCase().replace(/\s+/g, "-");
-    if ((activeConv.tags ?? []).includes(tag)) { toast.error("Tag already exists"); return; }
+  // tagName lets the picklist add an existing tag directly; defaults to the
+  // free-text input. Values are normalized the same way either path.
+  async function addTag(tagName?: string) {
+    if (!activeConv) return;
+    const raw = (tagName ?? tagInput).trim();
+    if (!raw) return;
+    const tag = raw.toLowerCase().replace(/\s+/g, "-");
+    if ((activeConv.tags ?? []).includes(tag)) { toast.error("Tag already added"); return; }
     const newTags = [...(activeConv.tags ?? []), tag];
     setDropdownOpen(false);
     setShowTagInput(false);
@@ -858,6 +994,7 @@ export default function WhatsAppPage() {
       body: JSON.stringify({ tags: newTags }),
     });
     await loadConversations();
+    void loadKnownTags(); // a brand-new tag should join the picklist immediately
     toast.success(`Tag "${tag}" added`);
   }
 
@@ -907,16 +1044,18 @@ export default function WhatsAppPage() {
   ];
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 64px)", margin: "-24px -24px 0 -24px", overflow: "hidden", fontFamily: 'system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Arial", "Tahoma", "Noto Sans Arabic", "Geeza Pro", sans-serif' }}>
+    <div style={{ display: "flex", height: "calc(100dvh - 64px)", margin: isMobile ? "-16px -16px 0 -16px" : "-24px -24px 0 -24px", overflow: "hidden", fontFamily: 'system-ui, -apple-system, "Segoe UI", "Helvetica Neue", "Arial", "Tahoma", "Noto Sans Arabic", "Geeza Pro", sans-serif' }}>
       {/* =================== LEFT PANEL =================== */}
       <div
         style={{
-          width: listCollapsed ? 0 : 340,
-          minWidth: listCollapsed ? 0 : 340,
-          display: "flex",
+          // On mobile the list pane is full-width (single-pane). On desktop it
+          // keeps its fixed 340px column and the collapse toggle still works.
+          width: isMobile ? (showListPane ? "100%" : 0) : listCollapsed ? 0 : 340,
+          minWidth: isMobile ? (showListPane ? "100%" : 0) : listCollapsed ? 0 : 340,
+          display: showListPane ? "flex" : "none",
           flexDirection: "column",
           background: "#0f0f0f",
-          borderRight: listCollapsed ? "none" : "1px solid #1e1e1e",
+          borderRight: isMobile || listCollapsed ? "none" : "1px solid #1e1e1e",
           overflow: "hidden",
           transition: "width 0.2s ease, min-width 0.2s ease",
         }}
@@ -996,7 +1135,7 @@ export default function WhatsAppPage() {
           </div>
 
           {/* Filter tabs */}
-          <div style={{ display: "flex", gap: 4 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {FILTERS.map((f) => (
               <button
                 key={f.key}
@@ -1020,7 +1159,14 @@ export default function WhatsAppPage() {
         </div>
 
         {/* Conversation list (or Broadcast list when in Broadcast Lists tab) */}
-        <div style={{ flex: 1, overflowY: "auto" }}>
+        <div
+          style={{ flex: 1, overflowY: "auto" }}
+          onScroll={(e) => {
+            if (filter === "broadcasts") return;
+            const el = e.currentTarget;
+            if (el.scrollHeight - el.scrollTop - el.clientHeight < 300) void loadMoreConversations();
+          }}
+        >
           {filter === "broadcasts" ? (
             broadcastsLoading ? (
               <div style={{ padding: 32, textAlign: "center", color: "#555", fontSize: 13 }}>Loading broadcasts...</div>
@@ -1032,14 +1178,19 @@ export default function WhatsAppPage() {
               broadcasts.map((b) => {
                 const isActive = b.id === activeBroadcastId;
                 const sub = `${b.sentCount}/${b.totalCount} sent · ${b.deliveredCount} delivered · ${b.readCount} read`;
+                const statusColor =
+                  b.status === "COMPLETED" ? "#10b981" : b.status === "SENDING" ? "#f59e0b" : b.status === "FAILED" ? "#ef4444" : "#3b82f6";
                 return (
                   <button
                     key={b.id}
                     onClick={() => { setActiveBroadcastId(b.id); setActiveId(null); }}
                     style={{
-                      display: "block",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 12,
                       width: "100%",
                       padding: "12px 16px",
+                      minHeight: 78,
                       background: isActive ? "#1a1a1a" : "transparent",
                       borderLeft: isActive ? "3px solid #25D366" : "3px solid transparent",
                       borderBottom: "1px solid #141414",
@@ -1047,23 +1198,49 @@ export default function WhatsAppPage() {
                       borderRight: "none",
                       cursor: "pointer",
                       textAlign: "left",
+                      transition: "background 0.1s",
                     }}
+                    onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = "#141414"; }}
+                    onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = "transparent"; }}
                   >
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-                      <Radio style={{ width: 13, height: 13, color: "#25D366" }} />
-                      <span style={{ fontSize: 13, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</span>
-                      <span style={{ marginLeft: "auto", fontSize: 10, padding: "2px 6px", borderRadius: 2, background: b.status === "COMPLETED" ? "#10b98120" : "#3b82f620", color: b.status === "COMPLETED" ? "#10b981" : "#3b82f6" }}>
-                        {b.status}
-                      </span>
+                    {/* Avatar (broadcast icon) */}
+                    <div
+                      style={{
+                        width: 40,
+                        height: 40,
+                        borderRadius: "50%",
+                        background: "#25D36622",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Radio style={{ width: 18, height: 18, color: "#25D366" }} />
                     </div>
-                    {b.template && (
-                      <div style={{ fontSize: 10, color: "#666", marginBottom: 3, fontFamily: "monospace" }}>
-                        Template: {b.template.name}
+                    {/* Content */}
+                    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 4 }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                        <span dir="auto" style={{ fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                          {b.name}
+                        </span>
+                        <span style={{ fontSize: 11, color: "#555", flexShrink: 0 }}>
+                          {formatDistanceToNow(new Date(b.createdAt), { addSuffix: false })}
+                        </span>
                       </div>
-                    )}
-                    <div style={{ fontSize: 11, color: "#888" }}>{sub}</div>
-                    <div style={{ fontSize: 10, color: "#555", marginTop: 3 }}>
-                      {formatDistanceToNow(new Date(b.createdAt), { addSuffix: true })}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 12, color: "#888", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
+                          {sub}
+                        </span>
+                        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, flexShrink: 0, background: `${statusColor}20`, color: statusColor }}>
+                          {b.status}
+                        </span>
+                      </div>
+                      {b.template && (
+                        <span style={{ fontSize: 10, color: "#555", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          Template: {b.template.name}
+                        </span>
+                      )}
                     </div>
                   </button>
                 );
@@ -1074,12 +1251,13 @@ export default function WhatsAppPage() {
           ) : filtered.length === 0 ? (
             <div style={{ padding: 32, textAlign: "center", color: "#555", fontSize: 13 }}>No conversations</div>
           ) : (
-            filtered.map((conv) => {
+            <>
+            {filtered.map((conv) => {
               const isActive = conv.id === activeId;
               return (
                 <button
                   key={conv.id}
-                  onClick={() => setActiveId(conv.id)}
+                  onClick={() => openConversation(conv.id)}
                   style={{
                     display: "flex",
                     alignItems: "center",
@@ -1188,7 +1366,11 @@ export default function WhatsAppPage() {
                   </div>
                 </button>
               );
-            })
+            })}
+            {loadingMore && (
+              <div style={{ padding: 14, textAlign: "center", color: "#555", fontSize: 12 }}>Loading more…</div>
+            )}
+            </>
           )}
         </div>
 
@@ -1212,7 +1394,7 @@ export default function WhatsAppPage() {
       </div>
 
       {/* =================== RIGHT PANEL =================== */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "#0a0a0a", minWidth: 0, position: "relative" }}>
+      <div style={{ flex: 1, display: showDetailPane ? "flex" : "none", flexDirection: "column", background: "#0a0a0a", minWidth: 0, position: "relative" }}>
         {filter === "broadcasts" && activeBroadcastId && !activeConv ? (
           /* Broadcast recipient drill-down */
           (() => {
@@ -1220,33 +1402,46 @@ export default function WhatsAppPage() {
             if (!b) return <div style={{ flex: 1 }} />;
             return (
               <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-                <div style={{ height: 64, padding: "0 24px", display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between", borderBottom: "1px solid #1e1e1e", flexShrink: 0 }}>
+                <div style={{ height: 64, padding: isMobile ? "0 12px" : "0 24px", display: "flex", alignItems: "center", gap: 12, justifyContent: "space-between", borderBottom: "1px solid #1e1e1e", flexShrink: 0 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-                    <button
-                      type="button"
-                      onClick={() => setListCollapsed((v) => !v)}
-                      title={listCollapsed ? "Show chat list" : "Hide chat list"}
-                      style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
-                    >
-                      {listCollapsed ? <PanelLeftOpen style={{ width: 14, height: 14 }} /> : <PanelLeftClose style={{ width: 14, height: 14 }} />}
-                    </button>
-                  <div>
-                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>{b.name}</div>
-                    <div style={{ fontSize: 11, color: "#666" }}>
+                    {isMobile ? (
+                      <button
+                        type="button"
+                        onClick={backToList}
+                        title="Back to list"
+                        aria-label="Back to list"
+                        style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
+                      >
+                        <ArrowLeft style={{ width: 16, height: 16 }} />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setListCollapsed((v) => !v)}
+                        title={listCollapsed ? "Show chat list" : "Hide chat list"}
+                        style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
+                      >
+                        {listCollapsed ? <PanelLeftOpen style={{ width: 14, height: 14 }} /> : <PanelLeftClose style={{ width: 14, height: 14 }} />}
+                      </button>
+                    )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.name}</div>
+                    <div style={{ fontSize: 11, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {b.template ? `Template: ${b.template.name} · ` : ""}
                       {b.totalCount} recipients · {b.status}
                     </div>
                   </div>
                   </div>
-                  <Link href="/broadcast" style={{ fontSize: 12, color: "#888", textDecoration: "none", border: "1px solid #333", padding: "6px 12px", borderRadius: 3 }}>
-                    Open Broadcast Manager →
+                  <Link href="/broadcast" style={{ fontSize: 12, color: "#888", textDecoration: "none", border: "1px solid #333", padding: "6px 12px", borderRadius: 3, whiteSpace: "nowrap", flexShrink: 0 }}>
+                    {isMobile ? "Manager →" : "Open Broadcast Manager →"}
                   </Link>
                 </div>
-                <div style={{ flex: 1, overflowY: "auto", padding: "16px 24px" }}>
+                <div style={{ flex: 1, overflowY: "auto", padding: isMobile ? "12px" : "16px 24px" }}>
                   {broadcastRecipients.length === 0 ? (
                     <div style={{ color: "#666", fontSize: 13, textAlign: "center", padding: 32 }}>Loading recipients...</div>
                   ) : (
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, color: "#ccc" }}>
+                    <div style={{ overflowX: "auto", width: "100%" }}>
+                    <table style={{ width: "100%", minWidth: 680, borderCollapse: "collapse", fontSize: 12, color: "#ccc" }}>
                       <thead>
                         <tr style={{ color: "#666", fontSize: 10, textTransform: "uppercase", letterSpacing: 0.5 }}>
                           <th style={{ textAlign: "left", padding: "8px 12px", borderBottom: "1px solid #222" }}>Contact</th>
@@ -1274,7 +1469,7 @@ export default function WhatsAppPage() {
                             <td style={{ padding: "8px 12px", textAlign: "right" }}>
                               {r.conversationId ? (
                                 <button
-                                  onClick={() => { setActiveId(r.conversationId!); }}
+                                  onClick={() => { openConversation(r.conversationId!); }}
                                   style={{ padding: "4px 10px", fontSize: 11, background: "transparent", border: "1px solid #333", borderRadius: 3, color: "#fff", cursor: "pointer" }}
                                 >
                                   Open Chat
@@ -1287,6 +1482,7 @@ export default function WhatsAppPage() {
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   )}
                 </div>
               </div>
@@ -1317,22 +1513,35 @@ export default function WhatsAppPage() {
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "space-between",
-                padding: "0 24px",
+                padding: isMobile ? "0 10px" : "0 24px",
+                gap: 8,
                 borderBottom: "1px solid #1e1e1e",
                 flexShrink: 0,
               }}
             >
-              {/* Left: list toggle + avatar + info */}
-              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                <button
-                  type="button"
-                  onClick={() => setListCollapsed((v) => !v)}
-                  title={listCollapsed ? "Show chat list" : "Hide chat list"}
-                  aria-label={listCollapsed ? "Show chat list" : "Hide chat list"}
-                  style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
-                >
-                  {listCollapsed ? <PanelLeftOpen style={{ width: 14, height: 14 }} /> : <PanelLeftClose style={{ width: 14, height: 14 }} />}
-                </button>
+              {/* Left: list toggle / back + avatar + info */}
+              <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, minWidth: 0, flex: isMobile ? 1 : "0 1 auto" }}>
+                {isMobile ? (
+                  <button
+                    type="button"
+                    onClick={backToList}
+                    title="Back to list"
+                    aria-label="Back to list"
+                    style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
+                  >
+                    <ArrowLeft style={{ width: 16, height: 16 }} />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setListCollapsed((v) => !v)}
+                    title={listCollapsed ? "Show chat list" : "Hide chat list"}
+                    aria-label={listCollapsed ? "Show chat list" : "Hide chat list"}
+                    style={{ width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", background: "transparent", border: "1px solid #333", borderRadius: 4, color: "#888", cursor: "pointer", flexShrink: 0 }}
+                  >
+                    {listCollapsed ? <PanelLeftOpen style={{ width: 14, height: 14 }} /> : <PanelLeftClose style={{ width: 14, height: 14 }} />}
+                  </button>
+                )}
                 <div
                   style={{
                     width: 36,
@@ -1345,18 +1554,19 @@ export default function WhatsAppPage() {
                     fontSize: 13,
                     fontWeight: 700,
                     color: "#fff",
+                    flexShrink: 0,
                   }}
                 >
                   {initials(activeConv.contactName)}
                 </div>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "#fff" }}>{activeConv.contactName}</div>
-                  <div style={{ fontSize: 11, color: "#666" }}>{activeConv.contactPhone}</div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeConv.contactName}</div>
+                  <div style={{ fontSize: 11, color: "#666", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{activeConv.contactPhone}</div>
                 </div>
               </div>
 
-              {/* Center: status + assigned agent */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {/* Center: status + assigned agent (hidden on mobile to save room — available via menu) */}
+              <div style={{ display: isMobile ? "none" : "flex", alignItems: "center", gap: 8 }}>
                 <StatusPill status={activeConv.status} handledBy={activeConv.handledBy} agentName={(activeConv as Record<string, unknown>).agentName as string | undefined} />
                 <div style={{ position: "relative" }}>
                   <button
@@ -1453,13 +1663,17 @@ export default function WhatsAppPage() {
               </div>
 
               {/* Right: actions */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {/* Take over / hand back */}
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                {/* Take over / hand back (icon-only on mobile to fit) */}
                 <button
                   onClick={() => void toggleHandoff()}
                   disabled={takingOver}
+                  title={activeConv.handledBy === "AI" ? "Take Over" : "Hand Back to AI"}
                   style={{
-                    padding: "6px 14px",
+                    padding: isMobile ? 0 : "6px 14px",
+                    width: isMobile ? 32 : undefined,
+                    height: isMobile ? 32 : undefined,
+                    justifyContent: isMobile ? "center" : undefined,
                     fontSize: 12,
                     fontWeight: 600,
                     borderRadius: 3,
@@ -1467,6 +1681,7 @@ export default function WhatsAppPage() {
                     display: "flex",
                     alignItems: "center",
                     gap: 6,
+                    flexShrink: 0,
                     transition: "all 0.15s",
                     ...(activeConv.handledBy === "AI"
                       ? { background: "#fff", color: "#000", border: "none" }
@@ -1474,15 +1689,19 @@ export default function WhatsAppPage() {
                   }}
                 >
                   <ArrowLeftRight style={{ width: 13, height: 13 }} />
-                  {takingOver ? "..." : activeConv.handledBy === "AI" ? "Take Over" : "Hand Back to AI"}
+                  {isMobile ? null : takingOver ? "..." : activeConv.handledBy === "AI" ? "Take Over" : "Hand Back to AI"}
                 </button>
 
-                {/* View / Create case */}
+                {/* View / Create case (icon-only on mobile to fit) */}
                 {activeConv.caseId ? (
                   <Link
                     href={`/cases/${activeConv.caseId}`}
+                    title="View Case"
                     style={{
-                      padding: "6px 14px",
+                      padding: isMobile ? 0 : "6px 14px",
+                      width: isMobile ? 32 : undefined,
+                      height: isMobile ? 32 : undefined,
+                      justifyContent: "center",
                       fontSize: 12,
                       fontWeight: 600,
                       borderRadius: 3,
@@ -1493,15 +1712,20 @@ export default function WhatsAppPage() {
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
+                      flexShrink: 0,
                     }}
                   >
                     <ExternalLink style={{ width: 12, height: 12 }} />
-                    View Case
+                    {isMobile ? null : "View Case"}
                   </Link>
                 ) : (
                   <button
+                    title="Create Case"
                     style={{
-                      padding: "6px 14px",
+                      padding: isMobile ? 0 : "6px 14px",
+                      width: isMobile ? 32 : undefined,
+                      height: isMobile ? 32 : undefined,
+                      justifyContent: "center",
                       fontSize: 12,
                       fontWeight: 600,
                       borderRadius: 3,
@@ -1512,11 +1736,12 @@ export default function WhatsAppPage() {
                       display: "flex",
                       alignItems: "center",
                       gap: 6,
+                      flexShrink: 0,
                     }}
                     onClick={() => void createCase()}
                   >
                     <Plus style={{ width: 12, height: 12 }} />
-                    Create Case
+                    {isMobile ? null : "Create Case"}
                   </button>
                 )}
 
@@ -1556,7 +1781,8 @@ export default function WhatsAppPage() {
                       {/* Menu items */}
                       {[
                         { label: "Send Template", icon: <FileText style={{ width: 13, height: 13 }} />, action: () => { setDropdownOpen(false); void openTemplateModal(); } },
-                        { label: "Mark as Resolved", icon: <Check style={{ width: 13, height: 13 }} />, action: () => void markResolved() },
+                        { label: "Mark as Resolved", icon: <Check style={{ width: 13, height: 13 }} />, action: () => void markResolved(false) },
+                        { label: "Resolve · keep with me (no AI)", icon: <CheckCheck style={{ width: 13, height: 13 }} />, action: () => void markResolved(true) },
                         { label: "Add Tag", icon: <Tag style={{ width: 13, height: 13 }} />, action: () => setShowTagInput(true) },
                         { label: "Block Contact", icon: <Ban style={{ width: 13, height: 13 }} />, action: () => { setDropdownOpen(false); toast.info("Blocking coming soon"); } },
                       ].map((item) => (
@@ -1587,13 +1813,50 @@ export default function WhatsAppPage() {
                       {/* Tag input inline */}
                       {showTagInput && (
                         <div style={{ padding: "8px 14px", borderTop: "1px solid #2a2a2a" }}>
+                          {/* Reusable tag picker: click an existing tag to apply it */}
+                          {(() => {
+                            const current = new Set(activeConv.tags ?? []);
+                            const available = knownTags.filter((t) => !current.has(t.name));
+                            if (available.length === 0) return null;
+                            return (
+                              <div style={{ marginBottom: 8 }}>
+                                <div style={{ fontSize: 9, color: "#666", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 }}>
+                                  Existing tags
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxHeight: 96, overflowY: "auto" }}>
+                                  {available.map((t) => (
+                                    <button
+                                      key={t.name}
+                                      onClick={() => void addTag(t.name)}
+                                      title={`Used in ${t.count} chat${t.count === 1 ? "" : "s"}`}
+                                      style={{
+                                        padding: "3px 8px",
+                                        background: "#1f1f1f",
+                                        border: "1px solid #333",
+                                        borderRadius: 3,
+                                        color: "#df5641",
+                                        fontSize: 10,
+                                        fontWeight: 500,
+                                        cursor: "pointer",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                      onMouseEnter={(e) => (e.currentTarget.style.background = "#2a2a2a")}
+                                      onMouseLeave={(e) => (e.currentTarget.style.background = "#1f1f1f")}
+                                    >
+                                      + {t.name}
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })()}
                           <div style={{ display: "flex", gap: 4 }}>
                             <input
                               type="text"
                               value={tagInput}
                               onChange={(e) => setTagInput(e.target.value)}
                               onKeyDown={(e) => { if (e.key === "Enter") void addTag(); if (e.key === "Escape") { setShowTagInput(false); setTagInput(""); } }}
-                              placeholder="Tag name..."
+                              placeholder="New tag name..."
                               autoFocus
                               style={{
                                 flex: 1,
@@ -1634,7 +1897,7 @@ export default function WhatsAppPage() {
             <div
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
-              style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}
+              style={{ flex: 1, overflowY: "auto", padding: isMobile ? "16px 12px" : "24px 32px" }}
               onClick={() => setDropdownOpen(false)}
             >
               {groupedMessages.map((group) => (
@@ -1657,6 +1920,23 @@ export default function WhatsAppPage() {
                   {group.items.map((msg) => {
                     const isOutbound = msg.direction === "outbound";
                     const isAIMsg = msg.isAI;
+                    // The message this one replied to (from the API enrichment, or a
+                    // local fallback if it's already in the loaded thread).
+                    const quoted =
+                      msg.replyTo ??
+                      (msg.replyToMessageId
+                        ? (() => {
+                            const q = messages.find((m) => m.id === msg.replyToMessageId);
+                            return q
+                              ? { body: q.body, sender: q.sender, senderName: q.senderName, mediaType: q.mediaType }
+                              : null;
+                          })()
+                        : null);
+                    const quotedFrom = quoted
+                      ? quoted.sender === "customer"
+                        ? activeConv.contactName
+                        : quoted.senderName
+                      : "";
 
                     return (
                       <div
@@ -1667,7 +1947,7 @@ export default function WhatsAppPage() {
                           marginBottom: 10,
                         }}
                       >
-                        <div style={{ maxWidth: "65%" }}>
+                        <div style={{ maxWidth: isMobile ? "82%" : "65%", minWidth: 0 }}>
                           {/* Sender label */}
                           {isOutbound && (
                             <div
@@ -1696,6 +1976,35 @@ export default function WhatsAppPage() {
                                 : { background: "#1a1a1a", border: "1px solid #222", color: "#fff" }),
                             }}
                           >
+                            {/* Quoted reply context — like native WhatsApp */}
+                            {quoted && (
+                              <div
+                                style={{
+                                  borderLeft: "3px solid #25d366",
+                                  background: "rgba(255,255,255,0.05)",
+                                  padding: "4px 8px",
+                                  marginBottom: 6,
+                                  borderRadius: 4,
+                                  maxWidth: "100%",
+                                }}
+                              >
+                                <div style={{ fontSize: 11, fontWeight: 600, color: "#25d366", marginBottom: 1 }}>
+                                  {quotedFrom}
+                                </div>
+                                <div
+                                  style={{
+                                    fontSize: 12,
+                                    color: "#999",
+                                    whiteSpace: "nowrap",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    maxWidth: isMobile ? "100%" : 260,
+                                  }}
+                                >
+                                  {quoted.mediaType ? `[${quoted.mediaType}]` : quoted.body || "Message"}
+                                </div>
+                              </div>
+                            )}
                             {(msg.mediaType || msg.mediaUrl) && (
                               <MediaPreview mediaType={msg.mediaType ?? "document"} mediaUrl={msg.mediaUrl} />
                             )}
@@ -1728,7 +2037,7 @@ export default function WhatsAppPage() {
             {activeConv.handledBy === "AI" ? (
               <div
                 style={{
-                  padding: "14px 24px",
+                  padding: isMobile ? "12px 14px" : "14px 24px",
                   borderTop: "1px solid #1e1e1e",
                   background: "#0f0f0f",
                   color: "#666",
@@ -1745,14 +2054,15 @@ export default function WhatsAppPage() {
               /* 24-hour customer service window expired — Meta policy: only approved templates can be sent */
               <div
                 style={{
-                  padding: "14px 24px",
+                  padding: isMobile ? "12px 14px" : "14px 24px",
                   borderTop: "1px solid #f59e0b40",
                   background: "#1a1408",
                   color: "#f59e0b",
                   fontSize: 13,
                   display: "flex",
                   alignItems: "center",
-                  gap: 12,
+                  gap: isMobile ? 8 : 12,
+                  flexWrap: isMobile ? "wrap" : "nowrap",
                 }}
               >
                 <AlertTriangle style={{ width: 18, height: 18, flexShrink: 0 }} />
@@ -1794,7 +2104,7 @@ export default function WhatsAppPage() {
                 {windowMsRemaining > 0 && windowMsRemaining < 6 * 60 * 60 * 1000 && (
                   <div
                     style={{
-                      padding: "6px 24px",
+                      padding: isMobile ? "6px 12px" : "6px 24px",
                       borderTop: "1px solid #1e1e1e",
                       background: "#1a1408",
                       display: "flex",
@@ -1812,11 +2122,11 @@ export default function WhatsAppPage() {
                 )}
                 <div
                   style={{
-                    padding: "16px 24px",
+                    padding: isMobile ? "10px 10px" : "16px 24px",
                     borderTop: "1px solid #1e1e1e",
                     display: "flex",
                     alignItems: "flex-end",
-                    gap: 12,
+                    gap: isMobile ? 4 : 12,
                   }}
                 >
                 <button
@@ -1824,8 +2134,8 @@ export default function WhatsAppPage() {
                   onClick={() => fileInputRef.current?.click()}
                   disabled={attaching}
                   style={{
-                    width: 36,
-                    height: 36,
+                    width: isMobile ? 32 : 36,
+                    height: isMobile ? 32 : 36,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1903,8 +2213,8 @@ export default function WhatsAppPage() {
                   title="Quick replies"
                   aria-label="Quick replies"
                   style={{
-                    width: 36,
-                    height: 36,
+                    width: isMobile ? 32 : 36,
+                    height: isMobile ? 32 : 36,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1917,13 +2227,33 @@ export default function WhatsAppPage() {
                 >
                   <Sparkles style={{ width: 18, height: 18 }} />
                 </button>
-                <div style={{ position: "relative" }}>
+                <button
+                  type="button"
+                  onClick={() => void openTemplateModal()}
+                  title="Send a template"
+                  aria-label="Send a template"
+                  style={{
+                    width: isMobile ? 32 : 36,
+                    height: isMobile ? 32 : 36,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    background: "transparent",
+                    border: "none",
+                    color: "#555",
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}
+                >
+                  <FileText style={{ width: 18, height: 18 }} />
+                </button>
+                <div style={{ position: "relative", flexShrink: 0 }}>
                   <button
                     type="button"
                     onClick={() => setEmojiOpen((v) => !v)}
                     style={{
-                      width: 36,
-                      height: 36,
+                      width: isMobile ? 32 : 36,
+                      height: isMobile ? 32 : 36,
                       display: "flex",
                       alignItems: "center",
                       justifyContent: "center",
@@ -1950,8 +2280,8 @@ export default function WhatsAppPage() {
                   onClick={() => void handleSend()}
                   disabled={!replyText.trim() || sending}
                   style={{
-                    width: 36,
-                    height: 36,
+                    width: isMobile ? 32 : 36,
+                    height: isMobile ? 32 : 36,
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
@@ -1971,6 +2301,10 @@ export default function WhatsAppPage() {
             )}
           </>
         )}
+
+        {/* Right-side panel: the case related to the open chat (desktop only).
+            Renders for every open chat; resolves the case by caseId or contact. */}
+        {activeConv && <WhatsAppCasePanel key={activeConv.id} conversationId={activeConv.id} />}
       </div>
 
       {/* ---- New chat modal ---- */}
@@ -2366,19 +2700,40 @@ export default function WhatsAppPage() {
               <label style={{ fontSize: 11, color: "#888", textTransform: "uppercase", letterSpacing: 0.5 }}>
                 Approved templates
               </label>
+              {/* Search by template name */}
+              <div style={{ position: "relative", marginTop: 6 }}>
+                <Search style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", width: 14, height: 14, color: "#666" }} />
+                <input
+                  value={tplSearch}
+                  onChange={(e) => setTplSearch(e.target.value)}
+                  placeholder="Search templates by name..."
+                  autoFocus
+                  style={{
+                    width: "100%",
+                    padding: "8px 10px 8px 30px",
+                    background: "#0a0a0a",
+                    border: "1px solid #2a2a2a",
+                    borderRadius: 4,
+                    color: "#fff",
+                    fontSize: 12,
+                    outline: "none",
+                  }}
+                />
+              </div>
               {tplList.length === 0 ? (
                 <p style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
                   No approved templates available. Submit one in the Broadcast page.
                 </p>
+              ) : tplFiltered.length === 0 ? (
+                <p style={{ fontSize: 12, color: "#666", marginTop: 8 }}>
+                  No templates match &ldquo;{tplSearch}&rdquo;.
+                </p>
               ) : (
                 <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {tplList.map((t) => (
+                  {tplFiltered.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => {
-                        setTplSelectedId(t.id);
-                        setTplVars({});
-                      }}
+                      onClick={() => selectTemplate(t)}
                       style={{
                         textAlign: "left",
                         padding: "10px 12px",

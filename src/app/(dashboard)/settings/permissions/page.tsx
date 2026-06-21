@@ -9,13 +9,13 @@ export default function PermissionsPage() {
   return (
     <div className="space-y-4">
       <h2 className="text-lg font-medium">Permissions Matrix</h2>
-      <div className="overflow-auto rounded-md border">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto rounded-md border">
+        <table className="w-full min-w-[640px] text-sm">
           <thead>
             <tr className="border-b text-left text-muted-foreground">
-              <th className="p-2">Role</th>
+              <th className="whitespace-nowrap p-2">Role</th>
               {allPermissions.map((perm) => (
-                <th key={perm} className="p-2">
+                <th key={perm} className="whitespace-nowrap p-2">
                   {perm}
                 </th>
               ))}

@@ -204,7 +204,7 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                       className="flex items-start gap-3 py-3 transition-colors hover:bg-muted/40 rounded-lg px-2 -mx-2 group"
                     >
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-xs text-muted-foreground">
                             #{c.caseNumber}
                           </span>
@@ -214,11 +214,11 @@ export default async function ContactDetailPage({ params }: { params: Promise<{ 
                         <p className="mt-0.5 truncate text-sm font-medium group-hover:text-primary transition-colors">
                           {c.title}
                         </p>
-                        <div className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
-                          <UserCircle2 className="h-3 w-3" />
-                          <span>{c.assignedTo?.name ?? c.assignedTo?.email ?? "Unassigned"}</span>
+                        <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+                          <UserCircle2 className="h-3 w-3 shrink-0" />
+                          <span className="min-w-0 truncate">{c.assignedTo?.name ?? c.assignedTo?.email ?? "Unassigned"}</span>
                           <span className="mx-1">·</span>
-                          <span>{formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
+                          <span className="shrink-0">{formatDistanceToNow(new Date(c.createdAt), { addSuffix: true })}</span>
                         </div>
                       </div>
                     </Link>

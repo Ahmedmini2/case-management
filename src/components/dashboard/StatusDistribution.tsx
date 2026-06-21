@@ -40,9 +40,9 @@ export function StatusDistribution({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-col items-center gap-4 sm:flex-row">
           {/* Chart */}
-          <div className="h-52 w-52 shrink-0 min-w-0">
+          <div className="h-48 w-48 shrink-0 min-w-0 sm:h-52 sm:w-52">
             <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
               <PieChart>
                 <Pie
@@ -78,7 +78,7 @@ export function StatusDistribution({
           </div>
 
           {/* Legend */}
-          <div className="flex flex-1 flex-col gap-2 min-w-0">
+          <div className="flex w-full flex-1 flex-col gap-2 min-w-0">
             {data.map((entry, index) => {
               const pct = total > 0 ? Math.round((entry.count / total) * 100) : 0;
               return (

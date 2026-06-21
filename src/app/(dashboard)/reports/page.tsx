@@ -60,19 +60,19 @@ export default async function ReportsPage() {
     return (
       <div className="space-y-6">
         {/* Page header */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-3">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10">
               <BarChart3 className="h-5 w-5 text-primary" />
             </div>
-            <div>
-              <h1 className="text-xl font-bold tracking-tight">Reports</h1>
-              <p className="text-xs text-muted-foreground">Last 30 days · Auto-refreshed</p>
+            <div className="min-w-0">
+              <h1 className="text-lg font-bold tracking-tight sm:text-xl">Reports</h1>
+              <p className="truncate text-xs text-muted-foreground">Last 30 days · Auto-refreshed</p>
             </div>
           </div>
           <Link
             href="/api/export/reports"
-            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
+            className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm font-medium hover:bg-muted transition-colors"
           >
             <BarChart3 className="h-3.5 w-3.5" />
             Export CSV
@@ -83,7 +83,7 @@ export default async function ReportsPage() {
         <StatsCards totals={report.totals} />
 
         {/* WhatsApp stats */}
-        <div className="grid gap-4 md:grid-cols-4">
+        <div className="grid gap-3 sm:gap-4 sm:grid-cols-2 md:grid-cols-4">
           {[
             { label: "WhatsApp Chats", value: report.whatsapp.total, icon: MessageCircle, color: "text-green-500", bg: "bg-green-950/40", border: "border-green-800/40" },
             { label: "AI Handling", value: report.whatsapp.ai, icon: Bot, color: "text-blue-400", bg: "bg-blue-950/40", border: "border-blue-800/40" },
@@ -114,7 +114,7 @@ export default async function ReportsPage() {
           </div>
 
           {/* Broadcast stat cards */}
-          <div className="grid gap-4 md:grid-cols-3 xl:grid-cols-6">
+          <div className="grid gap-3 grid-cols-2 sm:gap-4 md:grid-cols-3 xl:grid-cols-6">
             {[
               { label: "Broadcasts", value: report.broadcast.totalBroadcasts, icon: Radio, color: "text-green-500", bg: "bg-green-500/10" },
               { label: "Total Sent", value: report.broadcast.totalSent, icon: Send, color: "text-blue-400", bg: "bg-blue-500/10" },
@@ -129,8 +129,8 @@ export default async function ReportsPage() {
                     <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${bg}`}>
                       <Icon className={`h-4 w-4 ${color}`} />
                     </div>
-                    <div>
-                      <p className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
+                    <div className="min-w-0">
+                      <p className="truncate text-[10px] font-medium text-muted-foreground uppercase tracking-wide">{label}</p>
                       <p className="text-xl font-bold">{typeof value === "number" ? value.toLocaleString() : value}</p>
                     </div>
                   </div>

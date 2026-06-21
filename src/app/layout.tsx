@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Catamaran, Libre_Franklin, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/providers/ThemeProvider";
 import { Toaster } from "@/components/ui/sonner";
@@ -27,6 +27,15 @@ const jetbrainsMono = JetBrains_Mono({
 export const metadata: Metadata = {
   title: "The Dungeon Gear — Case Management",
   description: "Support & operations platform for The Dungeon Gear",
+};
+
+// Without width=device-width, mobile browsers render at a virtual desktop width
+// and every responsive breakpoint is ignored. This is the foundation for all
+// responsive behavior across the app.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
 };
 
 export default function RootLayout({
